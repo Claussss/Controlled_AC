@@ -11,19 +11,27 @@ AC/
 ├── create_zc1_dataset.py  
 ├── train.py  
 └── FACoder_AC  
-    ├── __init__.py  
-    ├── config.py  
-    ├── dataset.py  
-    ├── models.py  
-    └── utils.py  
+   ├── __init__.py  
+   ├── config.py  
+   ├── dataset.py  
+   ├── models.py  
+   └── utils.py  
+
+## Installation
+
+1. Create a conda environment with Python 3.11:  
+   `conda create -n facodec python=3.11.11`
+
+2. Activate the environment:  
+   `conda activate facodec`
+
+3. Install the required packages:  
+   `pip install -r requirements.txt`
 
 ## Usage
 
-1. Create the dataset:  
+1. Create the content codebook indexes dataset (zc1) from wavs. Specify the input dirs  inside the script:  
    `python create_zc1_dataset.py`
 
 2. Train the model locally:  
    `python train.py`
-
-3. On a SLURM cluster, submit the job with:  
-   `sbatch run_slurm.sh`
