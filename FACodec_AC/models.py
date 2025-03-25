@@ -1,4 +1,5 @@
 import math
+import os
 import random
 import torch
 import torch.nn as nn
@@ -136,6 +137,12 @@ def train_diffusion_model(model,
 
         avg_loss = total_loss / max(num_batches, 1)
         print(f"Epoch {epoch+1}/{epochs}, Loss={avg_loss:.4f}")
+
+        if (epoch + 1) % Config.checkpoint_epochs == 0:
+            os.makedirs(Config.checkpoint_dir, exist_ok=True)
+            checkpoint_path = os.path.join(Config.checkpoint_dir, f"diffusion_transformer.pt")
+            torch.save(model.state_dict(), checkpoint_path)
+            print(f"Checkpoint saved at {checkpoint_path} at epoch {epoch + 1}")
 
         if (epoch+1) % eval_epochs == 0:
             model.eval()

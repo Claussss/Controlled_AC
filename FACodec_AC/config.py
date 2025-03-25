@@ -1,11 +1,13 @@
 class Config:
     # Data and training parameters
     data_dir = '/home/yurii/Projects/AC/ljspeech/zc1_dataset'
+    checkpoint_dir = './checkpoints'
     batch_size = 8
     time_frames = 807
     T = 1
     epochs = 100
     eval_epochs = 10
+    checkpoint_epochs = 10
     lr = 1e-4
     device = 'cuda'
 
