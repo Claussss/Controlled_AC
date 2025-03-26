@@ -19,7 +19,7 @@ def process_wav(filepath, fa_encoder, fa_decoder, out_dir, device):
             h_input = fa_encoder(wav_waveform[None, :, :])
             _, vq_id, _, _, _ = fa_decoder(h_input, eval_vq=False, vq=True)
         base = os.path.splitext(os.path.basename(filepath))[0]
-        torch.save(vq_id[0], os.path.join(out_dir, f"{base}.pt"))
+        torch.save(vq_id[1], os.path.join(out_dir, f"{base}.pt"))
         return filepath, "success"
     except Exception as e:
         return filepath, f"error: {str(e)}"
