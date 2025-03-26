@@ -10,8 +10,11 @@ import torchaudio
 # Device configuration
 device = 'cuda' if torch.cuda.is_available() else 'cpu'
 
+import sys
+sys.path.append(os.path.join(os.path.dirname(__file__), '..', 'Amphion'))
+
 # Imports for FACodec
-from Amphion.models.codec.ns3_codec import FACodecEncoder, FACodecDecoder
+from models.codec.ns3_codec import FACodecEncoder, FACodecDecoder
 
 # Setup FACodec models
 fa_encoder = FACodecEncoder(ngf=32, up_ratios=[2,4,5,5], out_channels=256)

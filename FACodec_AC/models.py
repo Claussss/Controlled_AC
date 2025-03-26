@@ -119,7 +119,7 @@ def train_diffusion_model(model,
             optimizer.zero_grad()
             x0 = batch.to(device)
             mask = mask.to(device)
-            t = torch.tensor(random.uniform(0, T))
+            t = torch.tensor(random.uniform(0, 0.5))
             m_prob = diffusion_mask_schedule(t.item(), T)
             x_t, mask_positions = mask_tokens(x0, mask_prob=m_prob, mask_id=Config.MASK_ID)
             logits = model(x_t, src_key_padding_mask=mask)

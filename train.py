@@ -2,7 +2,7 @@ import os
 import random
 import torch
 from torch.utils.data import DataLoader
-from FACodec_AC.dataset import CodebookSequenceDataset, pad_collate
+from FACodec_AC.dataset import CodebookSequenceDataset
 from FACodec_AC.models import DiffusionTransformerModel, train_diffusion_model
 from FACodec_AC.config import Config
 
@@ -15,8 +15,8 @@ def main():
     train_dataset = CodebookSequenceDataset(os.path.join(Config.data_dir, 'train'))
     test_dataset  = CodebookSequenceDataset(os.path.join(Config.data_dir, 'test'))
     
-    dataloader_train = DataLoader(train_dataset, batch_size=Config.batch_size, shuffle=True, collate_fn=pad_collate)
-    dataloader_test  = DataLoader(test_dataset, batch_size=Config.batch_size, shuffle=False, collate_fn=pad_collate)
+    dataloader_train = DataLoader(train_dataset, batch_size=Config.batch_size, shuffle=True)
+    dataloader_test  = DataLoader(test_dataset, batch_size=Config.batch_size, shuffle=False)
     
     # Initialize the model.
     model = DiffusionTransformerModel(
