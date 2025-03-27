@@ -20,7 +20,7 @@ def main():
     
     # Initialize the model.
     model = DiffusionTransformerModel(
-        vocab_size=Config.vocab_size,
+        vocab_size=Config.VOCAB_SIZE,
         d_model=Config.d_model,
         nhead=Config.nhead,
         num_layers=Config.num_layers,
