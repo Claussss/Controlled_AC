@@ -1,37 +1,50 @@
 # Controlled Accent Conversion (AC) Project
 
-This repo contains code to create the zc1 dataset and to train a diffusion transformer model on that dataset. The project is organized into modules under `FACoder_AC/`. A SLURM submission script is provided in `run_slurm.sh`.
+This repository provides code to create the zc1 dataset and train a diffusion transformer model on that dataset. It is organized into modules under the `FACodec_AC/` directory.
 
 ## Directory Structure
-
-AC/  
-├── README.md  
-├── requirements.txt  
-├── run_slurm.sh  
-├── create_zc1_dataset.py  
-├── train.py  
-└── FACoder_AC  
-   ├── __init__.py  
-   ├── config.py  
-   ├── dataset.py  
-   ├── models.py  
-   └── utils.py  
+- **create_zc1_dataset.py**: Prepares the dataset by converting wav files into codebook index files (.py).  
+- **train.py**: Trains the diffusion transformer model on the dataset.  
+- **config.py**: Configuration definitions for paths, hyperparameters, etc.  
+- **dataset.py**: Logic for loading and preprocessing the dataset.  
+- **models.py**: Core model definition and training loop.  
+- **utils.py**: Additional utility functions.  
 
 ## Installation
 
 1. Create a conda environment with Python 3.11:  
-   `conda create -n facodec python=3.11.11`
-
+   ```bash
+   conda create -n facodec python=3.11.11
+   ```
 2. Activate the environment:  
-   `conda activate facodec`
-
+   ```bash
+   conda activate facodec
+   ```
 3. Install the required packages:  
-   `pip install -r requirements.txt`
+   ```bash
+   pip install -r requirements.txt
+   ```
+
+## Dataset Creation
+
+To build your dataset, first download and unzip LJSpeech:
+```bash
+wget https://data.keithito.com/data/speech/LJSpeech-1.1.tar.bz2
+tar xfj LJSpeech-1.1.tar.bz2
+```
+
+Then edit `create_zc1_dataset.py` to point to the correct input wav directory (e.g., `LJSpeech-1.1/wavs`) and set the desired output path. Finally, run:
+```bash
+python create_zc1_dataset.py
+```
+Each wav file will produce a `.pt` file containing a dictionary with:
+- `"token"`: indices of the content codebook (excluding residual).  
+- `"mask"`: a boolean mask marking the padding tokens.
 
 ## Usage
 
-1. Create the content codebook indexes dataset (zc1) from wavs. Specify the input dirs  inside the script:  
-   `python create_zc1_dataset.py`
-
-2. Train the model locally:  
-   `python train.py`
+1. (Optional) Generate the dataset using the steps above.
+2. Train the model locally:
+   ```bash
+   python train.py
+   ```
