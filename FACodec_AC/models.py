@@ -71,6 +71,9 @@ class CustomTransformerEncoder(nn.Module):
 
 class DiffusionTransformerModel(nn.Module):
     def __init__(self,
+                 pretrained_codebook,
+                 pretrained_proj_layer,
+                 std_file_path,
                  vocab_size=Config.VOCAB_SIZE,
                  d_model=1024,
                  nhead=8,
@@ -80,18 +83,64 @@ class DiffusionTransformerModel(nn.Module):
                  max_seq_len=4096):
         super().__init__()
         self.d_model = d_model
-        self.embedding = nn.Embedding(vocab_size, d_model)
+        self.std_file_path = std_file_path
+
+        # Copy pretrained codebook and projection layer
+        self.codebook = nn.Embedding.from_pretrained(pretrained_codebook.weight.clone(), freeze=True)
+        # Use the pretrained projection layer directly and freeze it
+        self.proj_to_256 = pretrained_proj_layer
+        for param in self.proj_to_256.parameters():
+            param.requires_grad = False  # Freeze the pretrained projection layer
+        # Additional projection layer to go from 256 to d_model
+        self.proj_to_d_model = nn.Linear(pretrained_proj_layer.out_features, d_model)
+
         self.pos_embedding = nn.Embedding(max_seq_len, d_model)
         self.encoder = CustomTransformerEncoder(num_layers, d_model, nhead, d_ff, dropout)
         self.fc_out = nn.Linear(d_model, vocab_size)
 
-    def forward(self, x, src_key_padding_mask=None):
+        # Load std from file
+        self.register_buffer("precomputed_std", torch.load(self.std_file_path))
+
+    def forward(self, x, mask_positions=None, padding_mask=None):
+        """
+        x            : [batch_size, seq_len] of discrete IDs.
+        mask_positions: [batch_size, seq_len] boolean tensor indicating where to add noise.
+        padding_mask : [batch_size, seq_len] where 1 indicates padding and 0 valid tokens.
+        """
         bsz, seq_len = x.size()
         pos_ids = torch.arange(seq_len, device=x.device).unsqueeze(0)
-        token_emb = self.embedding(x)       # [bsz, seq_len, d_model]
-        pos_emb = self.pos_embedding(pos_ids) # [1, seq_len, d_model]
+
+        # Replace pad tokens with a valid index (0) so they can be looked up.
+        x_mod = x.clone()
+        if padding_mask is not None:
+            x_mod[padding_mask == 1] = 0
+
+        # Look up code vectors for all positions.
+        code_vecs = self.codebook(x_mod)
+
+        # Upscale to 256 dimensions using the frozen pretrained projection layer.
+        code_vecs_upscaled = self.proj_to_256(code_vecs)  # [bsz, seq_len, 256]
+
+        # Zero out the code vectors corresponding to padded positions.
+        if padding_mask is not None:
+            code_vecs_upscaled[padding_mask == 1] = 0
+
+        # Add noise to the selected mask positions.
+        noise_level = random.uniform(Config.NOISE_MIN, Config.NOISE_MAX)
+        noise_scaled = torch.randn_like(code_vecs_upscaled) * (noise_level * self.precomputed_std)
+        code_vecs_noisy = code_vecs_upscaled.clone()
+        if mask_positions is not None:
+            code_vecs_noisy[mask_positions] += noise_scaled[mask_positions]
+
+        # Project to d_model dimension.
+        token_emb = self.proj_to_d_model(code_vecs_noisy)  # [bsz, seq_len, d_model]
+
+        # Add positional embeddings.
+        pos_emb = self.pos_embedding(pos_ids)  # [1, seq_len, d_model]
         h = token_emb + pos_emb
-        h = self.encoder(h, src_key_padding_mask=src_key_padding_mask)
+
+        # Pass through transformer encoder.
+        h = self.encoder(h, src_key_padding_mask=padding_mask)
         return self.fc_out(h)
 
 def train_diffusion_model(model,
@@ -102,19 +151,12 @@ def train_diffusion_model(model,
                           lr=1e-4,
                           device='cuda',
                           eval_epochs=5):
-    """
-    Train the diffusion transformer model.
-    Every `eval_epochs` epochs, it evaluates on the test set.
-    Logs both loss and accuracy to TensorBoard.
-    Saves a checkpoint only when evaluation loss improves.
-    """
-    
     optimizer = optim.Adam(model.parameters(), lr=lr)
     criterion = nn.CrossEntropyLoss(ignore_index=Config.PAD_ID, reduction='none')
     model.to(device)
     model.train()
 
-    writer = SummaryWriter(log_dir=Config.tensorboard_dir)  # Logs saved in Config.tensorboard_dir
+    writer = SummaryWriter(log_dir=Config.tensorboard_dir)
     best_eval_loss = float('inf')
 
     for epoch in range(epochs):
@@ -123,30 +165,32 @@ def train_diffusion_model(model,
         total_masked_train = 0
         num_batches = 0
 
-        for batch, mask in dataloader:
+        for batch, padding_mask in dataloader:
             optimizer.zero_grad()
-            x0 = batch.to(device)
-            mask = mask.to(device)
-            
-            # Generate random time and corresponding masking probability
-            t = torch.tensor(random.uniform(0, 0.5))
+            x0 = batch.to(device)   # discrete tokens
+            padding_mask = padding_mask.to(device)  # True/False for padding
+
+            # Generate random time t and choose mask fraction
+            t = torch.tensor(random.uniform(0, Config.max_token_fraction))
             m_prob = diffusion_mask_schedule(t.item(), T)
-            
-            # Mask tokens in x0
-            x_t, mask_positions = mask_tokens(x0, mask_prob=m_prob, mask_id=Config.MASK_ID)
-            
-            logits = model(x_t, src_key_padding_mask=mask)
+
+            # 3) Find which positions to mask; do NOT replace with mask_id
+            mask_positions = get_mask_positions(x0, mask_prob=m_prob)
+
+            # Forward pass: add noise to masked positions
+            logits = model(x0, mask_positions=mask_positions, padding_mask=padding_mask)
             bsz, seq_len, vocab_sz = logits.shape
+
             logits_flat = logits.view(bsz * seq_len, vocab_sz)
             x0_flat = x0.view(-1)
             mask_flat = mask_positions.view(-1)
+
             ce = criterion(logits_flat, x0_flat)
             loss = ce.mul(mask_flat).sum() / (mask_flat.sum() + 1e-9)
             loss.backward()
             optimizer.step()
-
             total_loss += loss.item()
-            
+
             # Compute training accuracy over masked tokens
             predicted = logits.argmax(dim=-1)
             correct = ((predicted == x0) & mask_positions).sum().item()
@@ -161,7 +205,6 @@ def train_diffusion_model(model,
         print(f"Epoch {epoch+1}/{epochs}, Loss={avg_loss:.4f}, Train Accuracy={train_accuracy:.4f}")
         writer.add_scalar("Loss/Train", avg_loss, epoch+1)
         writer.add_scalar("Accuracy/Train", train_accuracy, epoch+1)
-
         if (epoch+1) % eval_epochs == 0:
             model.eval()
             total_test_loss = 0.0
@@ -218,10 +261,16 @@ def mask_tokens(x, mask_prob, mask_id=Config.MASK_ID):
     Returns a masked version of x, where a fraction `mask_prob` of non-PAD tokens are replaced by mask_id.
     Also returns a binary mask indicating which tokens were masked.
     """
-    bsz, seq_len = x.size()
-    valid = x != Config.PAD_ID
-    rand = torch.rand(bsz, seq_len, device=x.device)
-    mask_positions = (rand < mask_prob) & valid
+    mask_positions = get_mask_positions(x, mask_prob)
     x_masked = x.clone()
     x_masked[mask_positions] = mask_id
     return x_masked, mask_positions
+
+def get_mask_positions(x, mask_prob):
+    """
+    Returns a boolean tensor of shape x indicating which positions to mask.
+    We never alter x's discrete tokens; we just note positions for noise injection.
+    """
+    valid = x != Config.PAD_ID
+    rand = torch.rand_like(x, dtype=torch.float)
+    return (rand < mask_prob) & valid
