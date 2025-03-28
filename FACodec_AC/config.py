@@ -3,9 +3,14 @@ class Config:
     data_dir = '/home/yurii/Projects/AC/ljspeech/zc1_dataset'
     checkpoint_dir = './checkpoints'
     tensorboard_dir = './tensorboard'
-    batch_size = 8
-    time_frames = 807
+    
+    time_frames = 807 # aka max_seq_len
     T = 1
+    max_token_fraction = 0.5 # t max for choosing frac of tokens to be masked
+    NOISE_MIN = 1.0
+    NOISE_MAX = 3.5
+
+    batch_size = 8
     epochs = 100
     eval_epochs = 10
     checkpoint_epochs = 10
