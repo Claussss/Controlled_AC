@@ -68,3 +68,4 @@ env/
 
 # Log files
 logs/
+checkpoints/
