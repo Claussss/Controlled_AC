@@ -101,16 +101,18 @@ class DiffusionTransformerModel(nn.Module):
         # Load std from file
         self.register_buffer("precomputed_std", torch.load(self.std_file_path))
 
-    def forward(self, x, mask_positions=None, padding_mask=None):
+    def forward(self, x, mask_positions=None, padding_mask=None, noise_scaled=None):
         """
         x            : [batch_size, seq_len] of discrete IDs.
         mask_positions: [batch_size, seq_len] boolean tensor indicating where to add noise.
         padding_mask : [batch_size, seq_len] where 1 indicates padding and 0 valid tokens.
+        noise_scaled : [batch_size, seq_len, 256] noise to add to the masked tokens.
         """
         bsz, seq_len = x.size()
         pos_ids = torch.arange(seq_len, device=x.device).unsqueeze(0)
 
         # Replace pad tokens with a valid index (0) so they can be looked up.
+        # (1026 is not valid codebook index). We will zero them out later.
         x_mod = x.clone()
         if padding_mask is not None:
             x_mod[padding_mask == 1] = 0
@@ -126,8 +128,9 @@ class DiffusionTransformerModel(nn.Module):
             code_vecs_upscaled[padding_mask == 1] = 0
 
         # Add noise to the selected mask positions.
-        noise_level = random.uniform(Config.NOISE_MIN, Config.NOISE_MAX)
-        noise_scaled = torch.randn_like(code_vecs_upscaled) * (noise_level * self.precomputed_std)
+        # Use noise_scaled passed from train_diffusion; if None, do not add noise.
+        if noise_scaled is None:
+            noise_scaled = torch.zeros_like(code_vecs_upscaled)
         code_vecs_noisy = code_vecs_upscaled.clone()
         if mask_positions is not None:
             code_vecs_noisy[mask_positions] += noise_scaled[mask_positions]
@@ -177,8 +180,15 @@ def train_diffusion_model(model,
             # 3) Find which positions to mask; do NOT replace with mask_id
             mask_positions = get_mask_positions(x0, mask_prob=m_prob)
 
+            # 4) Generate noise scaled by std
+            noise_level = random.uniform(Config.NOISE_MIN, Config.NOISE_MAX)
+            bsz, seq_len = x0.shape
+            feature_dim = model.proj_to_256.out_features
+            noise_scaled = torch.randn(bsz, seq_len, feature_dim, device=x0.device) \
+                * (noise_level * model.precomputed_std)
+
             # Forward pass: add noise to masked positions
-            logits = model(x0, mask_positions=mask_positions, padding_mask=padding_mask)
+            logits = model(x0, mask_positions=mask_positions, padding_mask=padding_mask, noise_scaled=noise_scaled)
             bsz, seq_len, vocab_sz = logits.shape
 
             logits_flat = logits.view(bsz * seq_len, vocab_sz)
@@ -215,7 +225,7 @@ def train_diffusion_model(model,
                 for test_batch, test_mask in eval_dataloader:
                     x0_test = test_batch.to(device)
                     test_mask = test_mask.to(device)
-                    logits_test = model(x0_test, src_key_padding_mask=test_mask)
+                    logits_test = model(x0_test, padding_mask=test_mask)
                     bsz, seq_len, vocab_sz = logits_test.shape
                     logits_test_flat = logits_test.view(bsz * seq_len, vocab_sz)
                     x0_test_flat = x0_test.view(-1)

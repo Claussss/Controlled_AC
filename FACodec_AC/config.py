@@ -6,9 +6,9 @@ class Config:
     
     time_frames = 807 # aka max_seq_len
     T = 1
-    max_token_fraction = 0.5 # t max for choosing frac of tokens to be masked
+    max_token_fraction = 0.5 # How much tokens will be masked will be sampled from uniform(0, 0.5)
     NOISE_MIN = 1.0
-    NOISE_MAX = 3.5
+    NOISE_MAX = 3.5 # How much noise will be added to the input(soft masking)
 
     batch_size = 8
     epochs = 100
