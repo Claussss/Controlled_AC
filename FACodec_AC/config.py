@@ -28,3 +28,10 @@ class Config:
     num_layers=6
     d_ff=2048
     dropout=0.1
+
+    # Classifier parameters
+    data_dir_foreign_classifier = '/home/yurii/Projects/AC/l2_arctic/zc1_dataset'
+    data_dir_native_classifier = '/home/yurii/Projects/AC/ljspeech/zc1_dataset'
+    epochs_classifier = 10
+    lr_classifier = 1e-4
+    eval_epochs_classifier = 1

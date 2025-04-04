@@ -45,7 +45,7 @@ if device == 'cuda':
     fa_encoder = fa_encoder.to(device)
     fa_decoder = fa_decoder.to(device)
 
-wav_dir = '/home/yurii/Projects/AC/ljspeech/LJSpeech-1.1/wavs'
+wav_dir = '/home/yurii/Projects/AC/l2_arctic/ASI/wav'
 all_wavs = glob.glob(os.path.join(wav_dir, '*.wav'))
 print(f"Found {len(all_wavs)} wav files.")
 
@@ -53,7 +53,7 @@ random.seed(42)
 train_files, test_files = train_test_split(all_wavs, test_size=0.1, random_state=42)
 print(f"Train files: {len(train_files)}, Test files: {len(test_files)}")
 
-output_dir = '/home/yurii/Projects/AC/ljspeech/zc1_dataset'
+output_dir = '/home/yurii/Projects/AC/l2_arctic/zc1_dataset'
 train_out = os.path.join(output_dir, 'train')
 test_out = os.path.join(output_dir, 'test')
 os.makedirs(train_out, exist_ok=True)

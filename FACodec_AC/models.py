@@ -145,6 +145,125 @@ class DiffusionTransformerModel(nn.Module):
         # Pass through transformer encoder.
         h = self.encoder(h, src_key_padding_mask=padding_mask)
         return self.fc_out(h)
+    
+class SelfAttentionPoolingClassifier(nn.Module):
+    def __init__(self, pretrained_codebook, pretrained_proj_layer,
+                 num_classes=2, input_channels=256, attention_hidden_dim=128):
+        super(SelfAttentionPoolingClassifier, self).__init__()
+        # Freeze pretrained components
+        self.codebook = nn.Embedding.from_pretrained(pretrained_codebook.weight.clone(), freeze=True)
+        self.proj_to_256 = pretrained_proj_layer
+        for param in self.proj_to_256.parameters():
+            param.requires_grad = False
+        
+        # Attention module: project each 256-dim frame to a scalar score.
+        self.attention = nn.Sequential(
+            nn.Linear(input_channels, attention_hidden_dim),
+            nn.Tanh(),
+            nn.Linear(attention_hidden_dim, 1)
+        )
+        # Classification head maps pooled representation to logits.
+        self.classifier = nn.Linear(input_channels, num_classes)
+        
+    def forward(self, token_ids, pad_mask=None):
+        """
+        token_ids: Tensor of shape (batch_size, seq_len) containing token indices.
+        pad_mask : Tensor of shape (batch_size, seq_len) where 1 indicates pad tokens.
+        """
+        # Replace pad tokens with a valid index (here 0) for codebook lookup.
+        token_ids_mod = token_ids.clone()
+        if pad_mask is not None:
+            token_ids_mod[pad_mask == 1] = 0
+        
+        # Get code vectors and upscale them.
+        # code_vectors shape: (B, seq_len, embed_dim)
+        code_vectors = self.codebook(token_ids_mod)
+        # z_c shape: (B, seq_len, 256)
+        z_c = self.proj_to_256(code_vectors)
+        
+        # Compute raw attention scores per frame.
+        # attn_scores: (B, seq_len, 1)
+        attn_scores = self.attention(z_c)
+        if pad_mask is not None:
+            # Mask out padded positions (set score to -inf so softmax ignores them)
+            attn_scores = attn_scores.masked_fill(pad_mask.unsqueeze(-1).bool(), float("-inf"))
+        
+        # Softmax over time dimension.
+        attn_weights = F.softmax(attn_scores, dim=1)  # (B, seq_len, 1)
+        
+        # Compute weighted sum of frame features.
+        pooled = (z_c * attn_weights).sum(dim=1)  # (B, 256)
+        logits = self.classifier(pooled)          # (B, num_classes)
+        return logits, attn_weights.squeeze(-1)
+    
+
+def train_classifier(model, train_dataloader, eval_dataloader, epochs=1, lr=1e-4, device='cuda', eval_epochs=5):
+    optimizer = optim.Adam(model.parameters(), lr=lr)
+    criterion = nn.CrossEntropyLoss()
+    model.to(device)
+    writer = SummaryWriter(log_dir=Config.tensorboard_dir)
+    best_eval_loss = float('inf')
+
+    for epoch in range(epochs):
+        model.train()
+        total_loss = 0.0
+        num_batches = 0
+
+        for tokens, pad_mask, labels in train_dataloader:
+            optimizer.zero_grad()
+            tokens = tokens.to(device)
+            pad_mask = pad_mask.to(device)
+            labels = labels.to(device)
+            
+            logits, _ = model(tokens, pad_mask=pad_mask)
+            loss = criterion(logits, labels)
+            loss.backward()
+            optimizer.step()
+            
+            total_loss += loss.item()
+            num_batches += 1
+
+        avg_loss = total_loss / max(num_batches, 1)
+        print(f"Epoch {epoch+1}/{epochs}, Loss: {avg_loss:.4f}")
+        writer.add_scalar("Loss/Train", avg_loss, epoch+1)
+
+        # Evaluation phase every eval_epochs epochs.
+        if (epoch+1) % eval_epochs == 0:
+            model.eval()
+            total_eval_loss = 0.0
+            eval_batches = 0
+            correct = 0
+            total = 0
+            with torch.no_grad():
+                for tokens, pad_mask, labels in eval_dataloader:
+                    tokens = tokens.to(device)
+                    pad_mask = pad_mask.to(device)
+                    labels = labels.to(device)
+                    
+                    logits, _ = model(tokens, pad_mask=pad_mask)
+                    loss = criterion(logits, labels)
+                    total_eval_loss += loss.item()
+                    eval_batches += 1
+                    
+                    preds = logits.argmax(dim=-1)
+                    correct += (preds == labels).sum().item()
+                    total += labels.size(0)
+            
+            avg_eval_loss = total_eval_loss / max(eval_batches, 1)
+            eval_accuracy = correct / total
+            print(f"Eval Loss: {avg_eval_loss:.4f}, Eval Accuracy: {eval_accuracy:.4f}")
+            writer.add_scalar("Loss/Eval", avg_eval_loss, epoch+1)
+            writer.add_scalar("Accuracy/Eval", eval_accuracy, epoch+1)
+
+            if avg_eval_loss < best_eval_loss:
+                best_eval_loss = avg_eval_loss
+                # Save checkpoint (adjust the path as needed)
+                checkpoint_path = os.path.join(Config.checkpoint_dir, f"classifier.pt")
+                torch.save(model.state_dict(), checkpoint_path)
+                print(f"Checkpoint saved at {checkpoint_path} with Eval Loss: {avg_eval_loss:.4f}")
+            model.train()
+    
+    writer.close()
 
 def train_diffusion_model(model,
                           dataloader,
