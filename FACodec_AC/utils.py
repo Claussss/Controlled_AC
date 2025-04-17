@@ -5,6 +5,9 @@ import torchaudio
 from concurrent.futures import ProcessPoolExecutor, as_completed
 import tqdm
 from FACodec_AC.config import Config
+import csv
+import random
+import string
 
 def pad_token_sequence(seq, target_len, pad_id):
     """
@@ -55,3 +58,58 @@ def process_files(file_list, fa_encoder, fa_decoder, out_dir, device, workers=4,
                 print(f"{fp}: {status}")
                 results.append((fp, status))
     return results
+
+def normalize_transcript(transcript):
+    """Remove punctuation and lowercase the transcript."""
+    return transcript.translate(str.maketrans('', '', string.punctuation)).lower()
+
+def load_metadata(metadata_path):
+    """Return a dict mapping file_id to normalized transcript."""
+    meta = {}
+    with open(metadata_path, "r", encoding="utf-8") as f:
+        reader = csv.reader(f, delimiter="|")
+        for row in reader:
+            if len(row) < 2:
+                continue
+            file_id = row[0].strip()
+            transcript = row[1].strip()
+            meta[file_id] = normalize_transcript(transcript)
+    return meta
+
+def get_zc1_from_indx(tokens, mask, fa_decoder):
+    """
+    Convert token indexes to continuous zc1 representations.
+    
+    tokens: LongTensor of shape [B, T] (pad token = 1025)
+    mask: BooleanTensor of shape [B, T] where True indicates padding.
+    
+    Replaces pad tokens with 0, embeds tokens via the codebook and projection,
+    then zeros out the padded positions.
+    """
+    tokens_mod = tokens.clone()
+    tokens_mod[mask] = 0
+    with torch.no_grad():
+        # Get codebook from the FACodec decoder.
+        codebook = fa_decoder.quantizer[1].layers[0].codebook.weight  # [num_codes, code_dim]
+        e_q = torch.nn.functional.embedding(tokens_mod, codebook)     # [B, T, code_dim]
+        z_c1 = fa_decoder.quantizer[1].layers[0].out_proj(e_q)          # [B, T, 256]
+    pad_mask = mask.unsqueeze(-1).expand_as(z_c1)
+    z_c1[pad_mask] = 0
+    return z_c1
+
+def collate_fn(batch, pad_token_id=0):
+    """
+    Collate function assumes that the latent tokens and masks are fixed-length.
+    Pads the variable-length target_ids.
+    """
+    latent_tokens = torch.stack([b["latent_tokens"] for b in batch], dim=0)  # [B, T]
+    latent_mask = torch.stack([b["latent_mask"] for b in batch], dim=0)      # [B, T]
+    transcripts = [b["transcript"] for b in batch]
+    target_ids = [b["target_ids"] for b in batch]
+    target_ids_padded = torch.nn.utils.rnn.pad_sequence(target_ids, batch_first=True, padding_value=pad_token_id)
+    return {
+        "latent_tokens": latent_tokens,
+        "latent_mask": latent_mask,
+        "transcripts": transcripts,
+        "target_ids": target_ids_padded,
+    }

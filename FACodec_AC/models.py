@@ -196,6 +196,32 @@ class SelfAttentionPoolingClassifier(nn.Module):
         logits = self.classifier(pooled)          # (B, num_classes)
         return logits, attn_weights.squeeze(-1)
     
+class ProjectionHead(nn.Module):
+    def __init__(self, in_features=5003, out_features=392):
+        super().__init__()
+        self.linear = nn.Linear(in_features, out_features)
+    def forward(self, x):
+        return self.linear(x)
+
+class ASRModel(nn.Module):
+    """
+    ASRModel wraps the frozen FACodec phone predictor and the projection head.
+    Given zc1 representations, it calls the phone predictor (with no gradients)
+    and then projects its output.
+    """
+    def __init__(self, fa_decoder, proj_head):
+        super().__init__()
+        self.fa_decoder = fa_decoder
+        self.proj_head = proj_head
+    def forward(self, zc1):
+        # zc1: [B, T, 256]. The phone predictor expects [B, channels, T].
+        with torch.no_grad():
+            fac_logits = self.fa_decoder.phone_predictor(zc1.permute(0, 2, 1))
+        # Restore [B, T, 5003] before projecting.
+        fac_logits = fac_logits[0]
+        proj_logits = self.proj_head(fac_logits)  # [B, T, 392]
+        return proj_logits
+    
 
 def train_classifier(model, train_dataloader, eval_dataloader, epochs=1, lr=1e-4, device='cuda', eval_epochs=5):
     optimizer = optim.Adam(model.parameters(), lr=lr)

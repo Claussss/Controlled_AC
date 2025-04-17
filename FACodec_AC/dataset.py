@@ -4,6 +4,7 @@ import torch
 from torch.utils.data import Dataset
 from FACodec_AC.config import Config
 import random
+from FACodec_AC.utils import load_metadata
 
 
 class CodebookSequenceDataset(Dataset):
@@ -72,3 +73,35 @@ class ClassificationDataset(Dataset):
         tokens = data['tokens']
         mask = data['mask']
         return tokens, mask, label
+    
+
+class Zc1DatasetASR(Dataset):
+    def __init__(self, zc1_dir, metadata_path, processor):
+        """
+        zc1_dir: Directory with .pt files (each file is a dict with keys "tokens" and "mask")
+        metadata_path: CSV file with transcripts.
+        processor: A Wav2Vec2Processor (for tokenizing transcripts)
+        """
+        self.zc1_dir = zc1_dir
+        self.processor = processor
+        self.meta = load_metadata(metadata_path)
+        self.files = [f for f in os.listdir(zc1_dir) if f.endswith(".pt")]
+    def __len__(self):
+        return len(self.files)
+    def __getitem__(self, idx):
+        filename = self.files[idx]
+        file_id = filename.split(".")[0]  # e.g., "LJ002-0121"
+        file_path = os.path.join(self.zc1_dir, filename)
+        latent = torch.load(file_path)  # expected to be a dict with "tokens" and "mask"
+        tokens = latent["tokens"]       # shape: [807]
+        mask = latent["mask"]           # shape: [807] (BooleanTensor: True for pad positions)
+        # Look up transcript from metadata and tokenize it.
+        transcript = self.meta.get(file_id, "")
+        target = self.processor.tokenizer(transcript, add_special_tokens=False).input_ids
+        target = torch.tensor(target, dtype=torch.long)
+        return {
+            "latent_tokens": tokens,   # fixed length [807]
+            "latent_mask": mask,         # fixed length [807]
+            "transcript": transcript,
+            "target_ids": target
+        }
