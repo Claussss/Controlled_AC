@@ -104,12 +104,18 @@ def collate_fn(batch, pad_token_id=0):
     """
     latent_tokens = torch.stack([b["latent_tokens"] for b in batch], dim=0)  # [B, T]
     latent_mask = torch.stack([b["latent_mask"] for b in batch], dim=0)      # [B, T]
-    transcripts = [b["transcript"] for b in batch]
-    target_ids = [b["target_ids"] for b in batch]
-    target_ids_padded = torch.nn.utils.rnn.pad_sequence(target_ids, batch_first=True, padding_value=pad_token_id)
+    # 2) collect true input lengths
+    input_lengths = (latent_mask == 0).sum(dim=1)                             # [B]
+
+    # 3) grab the raw target lists, no padding
+    target_lists   = [b["target_ids"] for b in batch]                  # list of [L_i]
+    target_lengths = torch.tensor([t.size(0) for t in target_lists])  # [B]
+    targets_flat   = torch.cat(target_lists, dim=0)                    # [sum(L_i)]
+
     return {
-        "latent_tokens": latent_tokens,
-        "latent_mask": latent_mask,
-        "transcripts": transcripts,
-        "target_ids": target_ids_padded,
+      "latent_tokens":  latent_tokens,
+      "latent_mask":    latent_mask,
+      "input_lengths":  input_lengths,
+      "targets":        targets_flat,
+      "target_lengths": target_lengths,
     }

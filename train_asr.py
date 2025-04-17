@@ -89,10 +89,13 @@ for epoch in range(num_epochs):
         # Forward pass through ASR model.
         proj_logits = asr_model(zc1)  # [B, T, 392]
         log_probs = proj_logits.log_softmax(dim=-1).transpose(0, 1)  # [T, B, 392]
-        input_lengths = torch.full((bsz,), log_probs.size(0), dtype=torch.long, device=device)
-        targets = batch["target_ids"].to(device)
-        target_lengths = (targets != pad_token_id).sum(dim=1)
-        loss = ctc_loss_fn(log_probs, targets, input_lengths, target_lengths)
+        #input_lengths = torch.full((bsz,), log_probs.size(0), dtype=torch.long, device=device)
+        #targets = batch["target_ids"].to(device)
+        #target_lengths = (targets != pad_token_id).sum(dim=1)
+        loss = ctc_loss_fn(log_probs, 
+                            batch["targets"].to(device),
+                            batch["input_lengths"].to(device),
+                            batch["target_lengths"].to(device))
         loss.backward()
         optimizer.step()
         running_loss += loss.item()

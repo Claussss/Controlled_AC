@@ -200,6 +200,11 @@ class ProjectionHead(nn.Module):
     def __init__(self, in_features=5003, out_features=392):
         super().__init__()
         self.linear = nn.Linear(in_features, out_features)
+        # self.linear = nn.Sequential(
+        #                 nn.Linear(5003, 1024),
+        #                 nn.ReLU(),
+        #                 nn.Linear(1024, 392)
+        #             )
     def forward(self, x):
         return self.linear(x)
 
