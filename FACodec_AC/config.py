@@ -39,10 +39,11 @@ class Config:
 
 class ASRConfig:
     # Separate configuration for ASR training.
-    zc1_dir = "/home/yurii/Projects/AC/ljspeech/zc1_dataset/train"
+    zc1_dir = "/home/yurii/Projects/AC/ljspeech/zc1_dataset"
     metadata_path = "/home/yurii/Projects/AC/ljspeech/LJSpeech-1.1/metadata.csv"
     checkpoint_path = "/home/yurii/Projects/AC/Controlled_AC/checkpoints"
     tensorboard_dir = "/home/yurii/Projects/AC/Controlled_AC/tensorboard/asr"
     batch_size = 4
     num_epochs = 30
     lr = 1e-4
+    eval_epochs = 10

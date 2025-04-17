@@ -208,23 +208,66 @@ class ProjectionHead(nn.Module):
     def forward(self, x):
         return self.linear(x)
 
+class ASRPhonemePredictor(nn.Module):
+    """
+    A new ASR module that uses a transformer encoder to predict phonemes from zc1.
+    Input:
+        x: [B, T, 256] representations (zc1).
+    Output:
+        Logits of shape [B, T, phoneme_vocab] for phoneme predictions.
+    """
+    def __init__(self,
+                 input_dim=256,
+                 d_model=256,
+                 nhead=4,
+                 num_layers=4,
+                 dim_feedforward=512,
+                 dropout=0.1,
+                 phoneme_vocab=50,
+                 max_seq_len=4096):
+        super().__init__()
+        # Project input features to d_model dimension.
+        self.input_proj = nn.Linear(input_dim, d_model)
+        # Positional embeddings
+        self.pos_embedding = nn.Embedding(max_seq_len, d_model)
+        # Transformer encoder using PyTorch's built-in module.
+        encoder_layer = nn.TransformerEncoderLayer(d_model=d_model,
+                                                   nhead=nhead,
+                                                   dim_feedforward=dim_feedforward,
+                                                   dropout=dropout,
+                                                   batch_first=True)
+        self.encoder = nn.TransformerEncoder(encoder_layer, num_layers=num_layers)
+        # Final classification layer predicts phoneme logits for each time step.
+        self.fc_out = nn.Linear(d_model, phoneme_vocab)
+
+    def forward(self, x):
+        # x: [B, T, input_dim] (expected to be [B, T, 256])
+        x = self.input_proj(x)  # now [B, T, d_model]
+        seq_len = x.size(1)
+        # Create positional indices and lookup embeddings.
+        pos_ids = torch.arange(seq_len, device=x.device).unsqueeze(0)
+        pos_emb = self.pos_embedding(pos_ids)
+        x = x + pos_emb
+        # Pass through transformer encoder.
+        x = self.encoder(x)
+        logits = self.fc_out(x)
+        return logits
+
 class ASRModel(nn.Module):
     """
-    ASRModel wraps the frozen FACodec phone predictor and the projection head.
-    Given zc1 representations, it calls the phone predictor (with no gradients)
-    and then projects its output.
+    Updated ASRModel now uses the new ASRPhonemePredictor (instead of using a frozen phone_predictor).
+    It receives zc1 [B, T, 256], obtains phoneme logits and then projects them using the projection head.
     """
-    def __init__(self, fa_decoder, proj_head):
+    def __init__(self, asr_predictor, proj_head):
         super().__init__()
-        self.fa_decoder = fa_decoder
+        self.asr_predictor = asr_predictor
         self.proj_head = proj_head
+
     def forward(self, zc1):
-        # zc1: [B, T, 256]. The phone predictor expects [B, channels, T].
-        with torch.no_grad():
-            fac_logits = self.fa_decoder.phone_predictor(zc1.permute(0, 2, 1))
-        # Restore [B, T, 5003] before projecting.
-        fac_logits = fac_logits[0]
-        proj_logits = self.proj_head(fac_logits)  # [B, T, 392]
+        # zc1: [B, T, 256]
+        phoneme_logits = self.asr_predictor(zc1)  # [B, T, phoneme_vocab]
+        # If needed, project phoneme logits; the projection head should be adapted accordingly.
+        proj_logits = self.proj_head(phoneme_logits)  # expected [B, T, X]
         return proj_logits
     
 
