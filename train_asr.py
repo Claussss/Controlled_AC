@@ -82,7 +82,7 @@ dataloader = DataLoader(dataset, batch_size=ASRConfig.batch_size, shuffle=True,
 val_dir = os.path.join(ASRConfig.zc1_dir, "test")
 val_dataset = Zc1DatasetASR(
     zc1_dir=val_dir,
-    metadata_path=ASRConfig.metadata_path,  # adjust if separate metadata is used for validation
+    metadata_path=ASRConfig.metadata_path,
     processor=processor
 )
 val_dataloader = DataLoader(val_dataset, batch_size=ASRConfig.batch_size, shuffle=False,
@@ -101,18 +101,17 @@ for epoch in range(num_epochs):
     running_loss = 0.0
     for batch in dataloader:
         optimizer.zero_grad()
-        latent_tokens = batch["latent_tokens"].to(device)        # [B, T]
-        latent_mask = batch["latent_mask"].to(device).bool()        # [B, T]
-        bsz = latent_tokens.size(0)
-        # Convert latent tokens to continuous zc1 representations.
-        zc1 = get_zc1_from_indx(latent_tokens, latent_mask, fa_decoder)  # [B, T, 256]
-        # Forward pass through ASR model.
-        proj_logits = asr_model(zc1)  # [B, T, 392]
-        log_probs = proj_logits.log_softmax(dim=-1).transpose(0, 1)  # [T, B, 392]
-        loss = ctc_loss_fn(log_probs, 
-                            batch["targets"].to(device),
-                            batch["input_lengths"].to(device),
-                            batch["target_lengths"].to(device))
+        latent_tokens = batch["latent_tokens"].to(device)
+        latent_mask = batch["latent_mask"].to(device).bool()
+        zc1 = get_zc1_from_indx(latent_tokens, latent_mask, fa_decoder)
+        proj_logits = asr_model(zc1)
+        log_probs = proj_logits.log_softmax(dim=-1).transpose(0, 1)
+        loss = ctc_loss_fn(
+            log_probs,
+            batch["targets"].to(device),
+            batch["input_lengths"].to(device),
+            batch["target_lengths"].to(device)
+        )
         loss.backward()
         optimizer.step()
         running_loss += loss.item()
@@ -123,7 +122,6 @@ for epoch in range(num_epochs):
     print(f"Epoch {epoch+1}/{num_epochs} Loss: {avg_loss:.4f}")
     writer.add_scalar("Loss/epoch", avg_loss, epoch)
 
-    # Run validation every ASRConfig.eval_epochs epochs.
     if (epoch + 1) % ASRConfig.eval_epochs == 0:
         asr_model.eval()
         val_running_loss = 0.0
@@ -131,21 +129,24 @@ for epoch in range(num_epochs):
             for batch in val_dataloader:
                 latent_tokens = batch["latent_tokens"].to(device)
                 latent_mask = batch["latent_mask"].to(device).bool()
-                bsz = latent_tokens.size(0)
                 zc1 = get_zc1_from_indx(latent_tokens, latent_mask, fa_decoder)
                 proj_logits = asr_model(zc1)
                 log_probs = proj_logits.log_softmax(dim=-1).transpose(0, 1)
-                loss = ctc_loss_fn(log_probs, 
-                                   batch["targets"].to(device),
-                                   batch["input_lengths"].to(device),
-                                   batch["target_lengths"].to(device))
+                loss = ctc_loss_fn(
+                    log_probs,
+                    batch["targets"].to(device),
+                    batch["input_lengths"].to(device),
+                    batch["target_lengths"].to(device)
+                )
                 val_running_loss += loss.item()
         avg_val_loss = val_running_loss / len(val_dataloader)
         print(f"Validation Loss after epoch {epoch+1}: {avg_val_loss:.4f}")
         writer.add_scalar("Loss/val", avg_val_loss, epoch)
 
-# Save the projection head weights (ASR model mapping).
-save_path = os.path.join(ASRConfig.checkpoint_path, "asr_projection_head.pt")
-torch.save(proj_head.state_dict(), save_path)
+# Save the full ASR model's weights instead of just the projection head.
+save_path = os.path.join(ASRConfig.checkpoint_path, "asr_model_full.pt")
+torch.save(asr_model.state_dict(), save_path)
+
+writer.close()
 writer.close()
 print(f"Training complete. Weights saved to {save_path}")

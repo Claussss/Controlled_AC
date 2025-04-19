@@ -4,10 +4,11 @@ import torch
 import torchaudio
 from concurrent.futures import ProcessPoolExecutor, as_completed
 import tqdm
-from FACodec_AC.config import Config
+from FACodec_AC.config import Config, ASRConfig
 import csv
 import random
 import string
+import torch.nn.functional as F
 
 def pad_token_sequence(seq, target_len, pad_id):
     """
@@ -25,7 +26,7 @@ def pad_token_sequence(seq, target_len, pad_id):
     
     return padded_seq, mask
 
-def process_wav(filepath, fa_encoder, fa_decoder, out_dir, device):
+def process_wav_facodec(filepath, fa_encoder, fa_decoder, out_dir, device):
     try:
         wav_waveform, wav_sr = torchaudio.load(filepath)
         if wav_sr != 16000:
@@ -41,22 +42,72 @@ def process_wav(filepath, fa_encoder, fa_decoder, out_dir, device):
         return filepath, "success"
     except Exception as e:
         return filepath, f"error: {str(e)}"
+    
+def prepare_wav_wav2vec(audio_path, device, w2v_processor):
+    # Load audio and resample if needed
+    audio, sample_rate = torchaudio.load(audio_path)
+    target_rate = 16000
+    if sample_rate != target_rate:
+        resampler = torchaudio.transforms.Resample(orig_freq=sample_rate, new_freq=target_rate)
+        audio = resampler(audio)
+    # Preprocess audio for model input
+    inputs = w2v_processor(audio.squeeze(0), sampling_rate=target_rate, return_tensors="pt", padding=True)
+    return inputs.input_values.to(device)
 
-def process_files(file_list, fa_encoder, fa_decoder, out_dir, device, workers=4, sequential=False):
+def process_wav_wav2vec(embedding_path, audio_folder, output_folder, device, w2v_model, w2v_processor):
+    embedding = torch.load(embedding_path)
+    mask = embedding.get("mask", None)
+    if mask is None:
+        raise ValueError(f"No 'mask' key found in {embedding_path}")
+    num_zeros = int((mask == 0).sum().item())
+
+    # Recover audio filename from embedding filename: sample.pt -> sample.wav
+    audio_filename = os.path.basename(embedding_path).replace('.pt', '.wav')
+    audio_path = os.path.join(audio_folder, audio_filename)
+    if not os.path.exists(audio_path):
+        raise FileNotFoundError(f"Audio file not found: {audio_path}")
+
+    w2v_input = prepare_wav_wav2vec(audio_path, device, w2v_processor)
+    with torch.no_grad():
+        w2v_outputs = w2v_model(w2v_input).logits
+    predicted_ids = torch.argmax(w2v_outputs, dim=-1)
+
+    # Interpolate predicted_ids to match the embedding sequence length
+    phone_ids = (
+        F.interpolate(predicted_ids.unsqueeze(0).float(),
+                      size=num_zeros,
+                      mode="nearest")
+        .long()
+        .squeeze(0)
+    )
+
+        # Optional: pad phone_ids up to a fixed length defined in ASRConfig.
+    padded_phone_ids, pad_mask = pad_token_sequence(
+        phone_ids, Config.time_frames, ASRConfig.PAD_ID
+    )
+
+    output_filename = os.path.basename(embedding_path)
+    output_path = os.path.join(output_folder, output_filename)
+    torch.save(padded_phone_ids, output_path)
+    #print(f"Saved processed data to {output_path}")
+
+def process_files_wav2vec(audio_folder, embeddings_folder, output_folder, device, w2v_model, w2v_processor):
+    # Create the output folder if missing
+    os.makedirs(output_folder, exist_ok=True)
+    for file in tqdm.tqdm(os.listdir(embeddings_folder), desc="Processing files"):
+        if file.endswith(".pt"):
+            embedding_path = os.path.join(embeddings_folder, file)
+            try:
+                process_wav_wav2vec(embedding_path, audio_folder, output_folder, device, w2v_model, w2v_processor)
+            except Exception as e:
+                print(f"Error processing {file}: {e}")
+
+def process_files_facodec(file_list, fa_encoder, fa_decoder, out_dir, device):
     results = []
-    if sequential:
-        for f in tqdm.tqdm(file_list, desc="Processing sequentially"):
-            fp, status = process_wav(f, fa_encoder, fa_decoder, out_dir, device)
-            print(f"{fp}: {status}")
-            results.append((fp, status))
-    else:
-        with ProcessPoolExecutor(max_workers=workers) as executor:
-            futures = [executor.submit(process_wav, f, fa_encoder, fa_decoder, out_dir, device)
-                       for f in file_list]
-            for future in tqdm.tqdm(as_completed(futures), total=len(futures), desc="Processing files"):
-                fp, status = future.result()
-                print(f"{fp}: {status}")
-                results.append((fp, status))
+    for f in tqdm.tqdm(file_list, desc="Processing files"):
+        fp, status = process_wav_facodec(f, fa_encoder, fa_decoder, out_dir, device)
+        print(f"{fp}: {status}")
+        results.append((fp, status))
     return results
 
 def normalize_transcript(transcript):

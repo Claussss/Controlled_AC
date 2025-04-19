@@ -1,6 +1,7 @@
 class Config:
     # Data and training parameters
     data_dir = '/home/yurii/Projects/AC/ljspeech/zc1_dataset'
+    cond_dir = '/home/yurii/Projects/AC/ljspeech/wav2vec_dataset'
     checkpoint_dir = './checkpoints'
     tensorboard_dir = './tensorboard'
     
@@ -47,3 +48,5 @@ class ASRConfig:
     num_epochs = 30
     lr = 1e-4
     eval_epochs = 10
+    PAD_ID = 392
+    VOCAB_SIZE = 392

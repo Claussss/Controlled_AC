@@ -18,8 +18,10 @@ def main():
     random.seed(42)
     
     # Create train and test datasets/dataloaders
-    train_dataset = CodebookSequenceDataset(os.path.join(Config.data_dir, 'train'))
-    test_dataset  = CodebookSequenceDataset(os.path.join(Config.data_dir, 'test'))
+    train_dataset = CodebookSequenceDataset(os.path.join(Config.data_dir, 'train'), 
+                                            os.path.join(Config.cond_dir, 'train'))
+    test_dataset  = CodebookSequenceDataset(os.path.join(Config.data_dir, 'test'),
+                                            os.path.join(Config.cond_dir, 'test'))
     
     dataloader_train = DataLoader(train_dataset, batch_size=Config.batch_size, shuffle=True)
     dataloader_test  = DataLoader(test_dataset, batch_size=Config.batch_size, shuffle=False)

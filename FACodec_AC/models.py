@@ -5,7 +5,7 @@ import torch
 import torch.nn as nn
 import torch.nn.functional as F
 import torch.optim as optim
-from FACodec_AC.config import Config
+from FACodec_AC.config import Config, ASRConfig
 from torch.utils.tensorboard import SummaryWriter
 
 
@@ -101,7 +101,18 @@ class DiffusionTransformerModel(nn.Module):
         # Load std from file
         self.register_buffer("precomputed_std", torch.load(self.std_file_path))
 
-    def forward(self, x, mask_positions=None, padding_mask=None, noise_scaled=None):
+        # Conditioning
+        self.phone_embedding = nn.Embedding(ASRConfig.VOCAB_SIZE+1, d_model) 
+        self.t_proj = nn.Linear(1, d_model)
+        self.noise_proj = nn.Linear(1, d_model)
+
+        self.phone_weight = nn.Parameter(torch.tensor(1.0))
+        self.t_weight = nn.Parameter(torch.tensor(1.0))
+        self.noise_weight = nn.Parameter(torch.tensor(1.0))
+
+
+
+    def forward(self, x, padded_phone_ids, t, noise_level,mask_positions=None, padding_mask=None, noise_scaled=None):
         """
         x            : [batch_size, seq_len] of discrete IDs.
         mask_positions: [batch_size, seq_len] boolean tensor indicating where to add noise.
@@ -140,7 +151,13 @@ class DiffusionTransformerModel(nn.Module):
 
         # Add positional embeddings.
         pos_emb = self.pos_embedding(pos_ids)  # [1, seq_len, d_model]
-        h = token_emb + pos_emb
+        phone_emb = self.phone_embedding(padded_phone_ids)  # shape: [bsz, seq_len, d_model]
+        t_emb = self.t_proj(t).unsqueeze(1)         # shape: [bsz, 1, d_model]
+        noise_emb = self.noise_proj(noise_level).unsqueeze(1)  # shape: [bsz, 1, d_model]
+
+        global_emb = self.t_weight * t_emb + self.noise_weight * noise_emb
+
+        h = token_emb + pos_emb + self.phone_weight * phone_emb  + global_emb 
 
         # Pass through transformer encoder.
         h = self.encoder(h, src_key_padding_mask=padding_mask)
@@ -361,27 +378,35 @@ def train_diffusion_model(model,
         total_masked_train = 0
         num_batches = 0
 
-        for batch, padding_mask in dataloader:
+        for batch, padding_mask, padded_phone_ids in dataloader:
             optimizer.zero_grad()
             x0 = batch.to(device)   # discrete tokens
             padding_mask = padding_mask.to(device)  # True/False for padding
-
+            padded_phone_ids = padded_phone_ids.to(device)  # condition: shape [bsz, seq_len]
+            bsz, seq_len = x0.shape
             # Generate random time t and choose mask fraction
-            t = torch.tensor(random.uniform(0, Config.max_token_fraction))
-            m_prob = diffusion_mask_schedule(t.item(), T)
+            t_value = random.uniform(0, Config.max_token_fraction)
+            t_value_norm = t_value / Config.max_token_fraction
+            t = torch.full((bsz,1), t_value_norm, device=device, dtype=torch.float)
+            m_prob = diffusion_mask_schedule(t_value, T)
+            
 
             # 3) Find which positions to mask; do NOT replace with mask_id
             mask_positions = get_mask_positions(x0, mask_prob=m_prob)
 
             # 4) Generate noise scaled by std
-            noise_level = random.uniform(Config.NOISE_MIN, Config.NOISE_MAX)
-            bsz, seq_len = x0.shape
+            noise_level_value = random.uniform(Config.NOISE_MIN, Config.NOISE_MAX)
+            noise_level_value_norm = (noise_level_value - Config.NOISE_MIN) \
+                   / (Config.NOISE_MAX - Config.NOISE_MIN)
+            noise_level = torch.full((bsz,1), noise_level_value_norm, device=device, dtype=torch.float)
+
             feature_dim = model.proj_to_256.out_features
             noise_scaled = torch.randn(bsz, seq_len, feature_dim, device=x0.device) \
-                * (noise_level * model.precomputed_std)
+                * (noise_level_value * model.precomputed_std)
 
             # Forward pass: add noise to masked positions
-            logits = model(x0, mask_positions=mask_positions, padding_mask=padding_mask, noise_scaled=noise_scaled)
+            logits = model(x0, padded_phone_ids, t, noise_level,
+               mask_positions=mask_positions, padding_mask=padding_mask, noise_scaled=noise_scaled)
             bsz, seq_len, vocab_sz = logits.shape
 
             logits_flat = logits.view(bsz * seq_len, vocab_sz)
@@ -415,21 +440,42 @@ def train_diffusion_model(model,
             total_masked_eval = 0
             test_batches = 0
             with torch.no_grad():
-                for test_batch, test_mask in eval_dataloader:
+                for test_batch, test_mask, test_padded_phone_ids in eval_dataloader:
                     x0_test = test_batch.to(device)
                     test_mask = test_mask.to(device)
-                    logits_test = model(x0_test, padding_mask=test_mask)
+                    test_padded_phone_ids = test_padded_phone_ids.to(device)
+                    bsz, seq_len = x0_test.shape
+                    feature_dim = model.proj_to_256.out_features
+
+                    # Sample random t and compute mask fraction, as in training
+                    t_value = random.uniform(0, Config.max_token_fraction)
+                    t_value_norm = t_value / Config.max_token_fraction
+                    t = torch.full((bsz,1), t_value_norm, device=device, dtype=torch.float)
+                    m_prob = diffusion_mask_schedule(t_value, T)
+                    mask_positions = get_mask_positions(x0_test, mask_prob=m_prob)
+
+                    # Sample random noise_level and generate scaled noise
+                    noise_level_value = random.uniform(Config.NOISE_MIN, Config.NOISE_MAX)
+                    noise_level_value_norm = (noise_level_value - Config.NOISE_MIN) \
+                                                / (Config.NOISE_MAX - Config.NOISE_MIN)
+                    noise_level = torch.full((bsz,1), noise_level_value_norm, device=device, dtype=torch.float)
+                    noise_scaled = torch.randn(bsz, seq_len, feature_dim, device=x0_test.device) \
+                        * (noise_level_value * model.precomputed_std)
+
+                    # Forward pass with noise injection and conditioning
+                    logits_test = model(x0_test, test_padded_phone_ids, t, noise_level,
+                                        mask_positions=mask_positions, padding_mask=test_mask, noise_scaled=noise_scaled)
                     bsz, seq_len, vocab_sz = logits_test.shape
                     logits_test_flat = logits_test.view(bsz * seq_len, vocab_sz)
                     x0_test_flat = x0_test.view(-1)
                     ce_test = criterion(logits_test_flat, x0_test_flat)
-                    loss_test = ce_test.mean()
+                    loss_test = ce_test.mul(mask_positions.view(-1).float()).sum() / (mask_positions.sum() + 1e-9)
                     total_test_loss += loss_test.item()
-                    
+
                     # Compute test accuracy for masked tokens
                     predicted_test = logits_test.argmax(dim=-1)
-                    correct_batch = ((predicted_test == x0_test) & (test_mask)).sum().item()
-                    total_batch = (test_mask).sum().item()
+                    correct_batch = ((predicted_test == x0_test) & mask_positions).sum().item()
+                    total_batch = mask_positions.sum().item()
                     correct_eval += correct_batch
                     total_masked_eval += total_batch
 
