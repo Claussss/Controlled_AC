@@ -60,7 +60,41 @@ def pad_token_sequence(seq, target_len, pad_id):
     
     return padded_seq, mask
 
+def interpolate_alignment(predicted_ids, num_zeros):
+    """
+    Interpolates the predicted_ids (alignment) to match the expected sequence length.
+    """
+    phone_ids = (
+        F.interpolate(predicted_ids.unsqueeze(0).float(),
+                      size=num_zeros,
+                      mode="nearest")
+        .long()
+        .squeeze(0)
+    )
+    return phone_ids
+
+
 def process_wav_facodec(filepath, fa_encoder, fa_decoder, out_dir, device):
+    """
+    Processes an audio file using the FACODec to extract and pad zc1, zc2, prosody, and acoustic features.
+    Specifically, it extracts:
+        - zc1 tokens (from vq_id[1]), along with a corresponding padding mask,
+        - zc2 tokens (from vq_id[2]),
+        - a prosody vector (from quantized_arr[0]), and
+        - an acoustic vector (from quantized_arr[2]).
+    Each of these components is padded to a fixed maximum sequence length using a provided padding function.
+    Finally, the function saves the padded tokens, mask, prosody, and acoustic vectors as a PyTorch file in the specified output directory.
+
+    Parameters:
+            filepath (str): The path to the input WAV audio file.
+            fa_encoder (Callable): The FACODec encoder model function to process the audio waveform.
+            fa_decoder (Callable): The FACODec decoder model function to extract latent features.
+            out_dir (str): The directory path where the processed output will be saved.
+            device (torch.device or str): The device on which the processing will be performed.
+
+    Returns:
+            tuple: A tuple containing the input filepath and a status string ("success" if processing and saving completed successfully; otherwise, an error message indicating the failure reason).
+    """
     try:
         wav_waveform, wav_sr = torchaudio.load(filepath)
         if wav_sr != 16000:
@@ -70,10 +104,10 @@ def process_wav_facodec(filepath, fa_encoder, fa_decoder, out_dir, device):
         with torch.no_grad():
             h_input = fa_encoder(wav_waveform[None, :, :])
             _, vq_id, _, quantized_arr, _ = fa_decoder(h_input, eval_vq=False, vq=True)
-        tokens, mask = pad_token_sequence(vq_id[1], Config.time_frames, Config.PAD_ID)
-        tokens_zc2, _ = pad_token_sequence(vq_id[2], Config.time_frames, Config.PAD_ID)
-        prosody_vector, _ = pad_token_sequence(quantized_arr[0], Config.time_frames, Config.PAD_ID)
-        acoustic_vector, _ = pad_token_sequence(quantized_arr[2], Config.time_frames, Config.PAD_ID)
+        tokens, mask = pad_token_sequence(vq_id[1], Config.max_seq_len, Config.PAD_ID)
+        tokens_zc2, _ = pad_token_sequence(vq_id[2], Config.max_seq_len, Config.PAD_ID)
+        prosody_vector, _ = pad_token_sequence(quantized_arr[0], Config.max_seq_len, Config.PAD_ID)
+        acoustic_vector, _ = pad_token_sequence(quantized_arr[2], Config.max_seq_len, Config.PAD_ID)
         base = os.path.splitext(os.path.basename(filepath))[0]
         torch.save({'tokens': tokens, 'mask': mask, 'tokens_zc2': tokens_zc2, 'prosody':prosody_vector, 'acoustic':acoustic_vector}, os.path.join(out_dir, f"{base}.pt"))
         return filepath, "success"
@@ -161,7 +195,7 @@ def clean_transcript(transcript: str) -> str:
     #phoneme_seq = phonemize(cleaned, language="en-us", backend="espeak", strip=True, njobs=1)
     return cleaned
 
-def get_wav2vec_forced_predicted_ids(embedding_path, audio_folder, transcript_metadata, device, model, bundle, target_sr, inference=False):
+def get_grapheme_forced_alignment(embedding_path, audio_folder, transcript_metadata, device, model, bundle, target_sr, inference=False):
     """
     Loads the embedding (to count zeros from the mask) and retrieves the transcript 
     from transcript_metadata (after cleaning), then performs forced alignment 
@@ -175,6 +209,7 @@ def get_wav2vec_forced_predicted_ids(embedding_path, audio_folder, transcript_me
         model: Wav2Vec2 model.
         bundle: Torchaudio pipeline bundle.
         target_sr (int): Target sample rate.
+        inference (bool): During inference, I don't have saved embeddings because I extract those on the fly.
         
     Returns:
         predicted_ids (Tensor): Forced-aligned predicted token IDs.
@@ -226,7 +261,7 @@ def get_wav2vec_forced_predicted_ids(embedding_path, audio_folder, transcript_me
     target_lens = torch.tensor([token_ids.size(1)])
     
     # Forced alignment (Viterbi).
-    predicted_ids, _ = forced_align(
+    predicted_ids, frame_scores = forced_align(
         log_probs,    # (1, T', V)
         token_ids,    # (1, N)
         input_lens,   # (1,)
@@ -234,13 +269,21 @@ def get_wav2vec_forced_predicted_ids(embedding_path, audio_folder, transcript_me
         blank=blank_id,
     )
     
-    return predicted_ids, num_zeros
+    return predicted_ids, num_zeros, frame_scores
 
 def greedy_split(token: str, vocab):
     """
-    Split `token` into a sequence of substrings found in `vocab`
-    by always taking the longest possible prefix match.
-    If no match is found, falls back to single‐char tokens.
+    Split the given token into substrings found in the vocab using the longest possible prefix match.
+    If no match is found, the token is split into single characters.
+
+    This function is used only for get_phone_forced_alignment as the phonemizer sometimes returns merged phones.
+
+    Args:
+        token (str): The input token to be split.
+        vocab (iterable): Collection of valid substrings.
+
+    Returns:
+        list: A list of substrings (or individual characters) from the token.
     """
     splits = []
     idx    = 0
@@ -260,8 +303,10 @@ def greedy_split(token: str, vocab):
     return splits
 
 
-def get_text_phoneme_forced_ids(embedding_path, audio_folder, transcript_metadata, device, model, proc, target_sr, inference=False):
-    # Load embedding and count zeros in the mask.
+def get_phone_forced_alignment(embedding_path, audio_folder, transcript_metadata, device, model, proc, target_sr, inference=False):
+    """
+    Same args as in get_grapheme_forced_alignment, but this uses phonemizer and returns ids of phones not graphemes.
+    """
     num_zeros = 0
     if not inference:
         embedding = torch.load(embedding_path)
@@ -328,21 +373,9 @@ def get_text_phoneme_forced_ids(embedding_path, audio_folder, transcript_metadat
 
     return aligned_ids, num_zeros, frame_scores
 
-def prepare_wav_wav2vec(audio_path, device, w2v_processor):
-    # Load audio and resample if needed
-    audio, sample_rate = torchaudio.load(audio_path)
-    target_rate = 16000
-    if sample_rate != target_rate:
-        resampler = torchaudio.transforms.Resample(orig_freq=sample_rate, new_freq=target_rate)
-        audio = resampler(audio)
-    # Preprocess audio for model input
-    inputs = w2v_processor(audio.squeeze(0), sampling_rate=target_rate, return_tensors="pt", padding=True)
-    return inputs.input_values.to(device)
-
-def get_wav2vec_predicted_ids(embedding_path, audio_folder, device, w2v_model, w2v_processor):
+def get_asr_alignment(embedding_path, audio_folder, device, w2v_model, w2v_processor):
     """
-    Loads the embedding, recovers the corresponding audio,
-    and returns the predicted token ids along with the number of non-padded positions.
+    Transcribes the audio corresponding to the embedding, producing an aligned transcription.
     """
     embedding = torch.load(embedding_path)
     mask = embedding.get("mask", None)
@@ -356,156 +389,21 @@ def get_wav2vec_predicted_ids(embedding_path, audio_folder, device, w2v_model, w
     if not os.path.exists(audio_path):
         raise FileNotFoundError(f"Audio file not found: {audio_path}")
 
-    w2v_input = prepare_wav_wav2vec(audio_path, device, w2v_processor)
+    # Inline prepare_wav2vec_input functionality:
+    audio, sample_rate = torchaudio.load(audio_path)
+    target_rate = 16000
+    if sample_rate != target_rate:
+        resampler = torchaudio.transforms.Resample(orig_freq=sample_rate, new_freq=target_rate)
+        audio = resampler(audio)
+    # Preprocess audio for model input
+    inputs = w2v_processor(audio.squeeze(0), sampling_rate=target_rate, return_tensors="pt", padding=True)
+    w2v_input = inputs.input_values.to(device)
+
     with torch.no_grad():
         w2v_outputs = w2v_model(w2v_input).logits
     predicted_ids = torch.argmax(w2v_outputs, dim=-1)
     return predicted_ids, num_zeros
 
-def interpolate_and_pad_wav2vec_predicted_ids(predicted_ids, num_zeros):
-    """
-    Interpolates the predicted_ids to match the expected sequence length and pads them.
-    """
-    phone_ids = (
-        F.interpolate(predicted_ids.unsqueeze(0).float(),
-                      size=num_zeros,
-                      mode="nearest")
-        .long()
-        .squeeze(0)
-    )
-    padded_phone_ids, pad_mask = pad_token_sequence(
-        phone_ids, Config.time_frames, ASRConfig.PAD_ID
-    )
-    return padded_phone_ids, pad_mask
-
-def process_files_wav2vec(audio_folder, embeddings_folder, output_folder, device, w2v_model, w2v_processor):
-    # Create the output folder if missing
-    os.makedirs(output_folder, exist_ok=True)
-    for file in tqdm.tqdm(os.listdir(embeddings_folder), desc="Processing files"):
-        if file.endswith(".pt"):
-            embedding_path = os.path.join(embeddings_folder, file)
-            try:
-                predicted_ids, num_zeros = get_wav2vec_predicted_ids(embedding_path, audio_folder, device, w2v_model, w2v_processor)
-                padded_phone_ids, pad_mask = interpolate_and_pad_wav2vec_predicted_ids(predicted_ids, num_zeros)
-                # Save the processed data
-                output_path = os.path.join(output_folder, file)
-                torch.save(padded_phone_ids, output_path)
-            except Exception as e:
-                print(f"Error processing {file}: {e}")
-
-def process_files_wav2vec_forced(audio_folder, embeddings_folder, transcript_metadata, output_folder, device, model, bundle, target_sr):
-    """
-    Processes each embedding file in embeddings_folder by performing forced alignment.
-
-    For each embedding file (.pt), this function:
-      1. Loads the embedding, counts zeros in the "mask",
-      2. Retrieves and cleans the transcript from transcript_metadata,
-      3. Loads the corresponding audio file from audio_folder,
-      4. Computes frame-level log-probs and forced aligns with the transcript to get predicted token IDs,
-      5. Interpolates and pads the predicted_ids to match the expected length,
-      6. Saves the padded predicted_ids to output_folder.
-    
-    Args:
-        audio_folder (str): Directory containing the audio (.wav) files.
-        embeddings_folder (str): Directory containing embedding (.pt) files.
-        transcript_metadata (dict): Mapping from file_id to transcript.
-        output_folder (str): Directory where processed files will be saved.
-        device (torch.device or str): Device for computation.
-        model: Wav2Vec2 model.
-        bundle: Torchaudio pipeline bundle.
-        target_sr (int): Target sample rate.
-    """
-
-    os.makedirs(output_folder, exist_ok=True)
-    
-    for file in tqdm.tqdm(os.listdir(embeddings_folder), desc="Processing forced alignment files"):
-        if file.endswith(".pt"):
-            embedding_path = os.path.join(embeddings_folder, file)
-            try:
-                predicted_ids, num_zeros = get_wav2vec_forced_predicted_ids(
-                    embedding_path,
-                    audio_folder,
-                    transcript_metadata,
-                    device,
-                    model,
-                    bundle,
-                    target_sr
-                )
-                padded_phone_ids, _ = interpolate_and_pad_wav2vec_predicted_ids(predicted_ids, num_zeros)
-                output_path = os.path.join(output_folder, file)
-                torch.save(padded_phone_ids, output_path)
-                #print(f"{file}: success")
-            except Exception as e:
-                print(f"Error processing {file}: {e}")
-
-def process_files_text_phoneme_forced(audio_folder, embeddings_folder, transcript_metadata, output_folder, device, model, proc, target_sr):
-    """
-    Processes each embedding file in embeddings_folder by performing forced alignment.
-
-    For each embedding file (.pt), this function:
-      1. Loads the embedding, counts zeros in the "mask",
-      2. Retrieves and cleans the transcript from transcript_metadata,
-      3. Loads the corresponding audio file from audio_folder,
-      4. Computes frame-level log-probs and forced aligns with the transcript to get predicted token IDs,
-      5. Interpolates and pads the predicted_ids to match the expected length,
-      6. Saves the padded predicted_ids to output_folder.
-    
-    Args:
-        audio_folder (str): Directory containing the audio (.wav) files.
-        embeddings_folder (str): Directory containing embedding (.pt) files.
-        transcript_metadata (dict): Mapping from file_id to transcript.
-        output_folder (str): Directory where processed files will be saved.
-        device (torch.device or str): Device for computation.
-        model: Wav2Vec2 model.
-        bundle: Torchaudio pipeline bundle.
-        target_sr (int): Target sample rate.
-    """
-
-    os.makedirs(output_folder, exist_ok=True)
-    for file in tqdm.tqdm(os.listdir(embeddings_folder), desc="Processing forced alignment files"):
-        if file.endswith(".pt"):
-            embedding_path = os.path.join(embeddings_folder, file)
-            try:
-                predicted_ids, num_zeros = get_text_phoneme_forced_ids(
-                    embedding_path,
-                    audio_folder,
-                    transcript_metadata,
-                    device,
-                    model,
-                    proc,
-                    target_sr
-                )
-                padded_phone_ids, _ = interpolate_and_pad_wav2vec_predicted_ids(predicted_ids, num_zeros)
-                output_path = os.path.join(output_folder, file)
-                torch.save(padded_phone_ids, output_path)
-                #print(f"{file}: success")
-            except Exception as e:
-                print(f"Error processing {file}: {e}")
-
-def process_files_facodec(file_list, fa_encoder, fa_decoder, out_dir, device):
-    results = []
-    for f in tqdm.tqdm(file_list, desc="Processing files"):
-        fp, status = process_wav_facodec(f, fa_encoder, fa_decoder, out_dir, device)
-        print(f"{fp}: {status}")
-        results.append((fp, status))
-    return results
-
-def normalize_transcript(transcript):
-    """Remove punctuation and lowercase the transcript."""
-    return transcript.translate(str.maketrans('', '', string.punctuation)).lower()
-
-def load_metadata(metadata_path):
-    """Return a dict mapping file_id to normalized transcript."""
-    meta = {}
-    with open(metadata_path, "r", encoding="utf-8") as f:
-        reader = csv.reader(f, delimiter="|")
-        for row in reader:
-            if len(row) < 2:
-                continue
-            file_id = row[0].strip()
-            transcript = row[1].strip()
-            meta[file_id] = normalize_transcript(transcript)
-    return meta
 
 def get_zc1_from_indx(tokens, mask, fa_decoder):
     """
@@ -529,25 +427,32 @@ def get_zc1_from_indx(tokens, mask, fa_decoder):
     z_c1 = rearrange(z_c1, "b t d -> b d t")
     return z_c1
 
-def collate_fn(batch, pad_token_id=0):
+def get_mask_positions(x: torch.Tensor, r_range: tuple = (0.3, 0.4), p_drop: float = 0.1) -> torch.Tensor:
     """
-    Collate function assumes that the latent tokens and masks are fixed-length.
-    Pads the variable-length target_ids.
+    Args:
+        x      : LongTensor of token IDs of shape [B, T]
+        r_range: tuple (default: (0.3, 0.4)). Defines the lower and upper bound for the percentage of tokens 
+                 to drop in a contiguous segment when not dropping the entire sequence.
+        p_drop : float. With probability p_drop, the entire sequence is masked.
+                 Otherwise, a single contiguous segment is masked based on r_range.
+                 
+    Returns:
+        mask   : BoolTensor of shape [B, T] where masked positions are True and unmasked are False,
+                 excluding PAD tokens (those with value Config.PAD_ID).
     """
-    latent_tokens = torch.stack([b["latent_tokens"] for b in batch], dim=0)  # [B, T]
-    latent_mask = torch.stack([b["latent_mask"] for b in batch], dim=0)      # [B, T]
-    # 2) collect true input lengths
-    input_lengths = (latent_mask == 0).sum(dim=1)                             # [B]
+    B, T = x.shape
+    device = x.device
+    mask = torch.zeros((B, T), dtype=torch.bool, device=device)
+    
+    for b in range(B):
+        if random.random() < p_drop:
+            mask[b] = True
+        else:
+            r = random.uniform(r_range[0], r_range[1])
+            seg_len = max(1, int(round(r * T)))
+            start = random.randint(0, T - seg_len)
+            mask[b, start:start + seg_len] = True
 
-    # 3) grab the raw target lists, no padding
-    target_lists   = [b["target_ids"] for b in batch]                  # list of [L_i]
-    target_lengths = torch.tensor([t.size(0) for t in target_lists])  # [B]
-    targets_flat   = torch.cat(target_lists, dim=0)                    # [sum(L_i)]
-
-    return {
-      "latent_tokens":  latent_tokens,
-      "latent_mask":    latent_mask,
-      "input_lengths":  input_lengths,
-      "targets":        targets_flat,
-      "target_lengths": target_lengths,
-    }
+    # Exclude PAD tokens from being masked.
+    mask = mask & (x != Config.PAD_ID)
+    return mask

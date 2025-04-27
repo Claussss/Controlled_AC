@@ -2,10 +2,11 @@ import os
 import glob
 import random
 from sklearn.model_selection import train_test_split
-from FACodec_AC.utils import process_files_facodec
+from FACodec_AC.utils import process_wav_facodec
 from huggingface_hub import hf_hub_download
 import torch
 import torchaudio
+import tqdm
 
 # Device configuration
 device = 'cuda' if torch.cuda.is_available() else 'cpu'
@@ -60,8 +61,16 @@ os.makedirs(train_out, exist_ok=True)
 os.makedirs(test_out, exist_ok=True)
 
 if __name__ == "__main__":
-    parallel = False
     print("Processing train set...")
-    process_files_facodec(train_files, fa_encoder, fa_decoder, train_out, device)
+    train_results = []
+    for f in tqdm.tqdm(train_files, desc="Processing train files"):
+        fp, status = process_wav_facodec(f, fa_encoder, fa_decoder, train_out, device)
+        print(f"{fp}: {status}")
+        train_results.append((fp, status))
+
     print("Processing test set...")
-    process_files_facodec(test_files, fa_encoder, fa_decoder, test_out, device)
+    test_results = []
+    for f in tqdm.tqdm(test_files, desc="Processing test files"):
+        fp, status = process_wav_facodec(f, fa_encoder, fa_decoder, test_out, device)
+        print(f"{fp}: {status}")
+        test_results.append((fp, status))

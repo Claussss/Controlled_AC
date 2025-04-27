@@ -1,16 +1,26 @@
 import os
 import random
 import torch
+import torch.optim as optim
+import torch.nn.functional as F
 from torch.utils.data import DataLoader
+from torch.utils.tensorboard import SummaryWriter
 from FACodec_AC.dataset import CodebookSequenceDataset
-from FACodec_AC.models import DiffusionTransformerModel, train_diffusion_model
+from FACodec_AC.models import DiffusionTransformerModel
 from FACodec_AC.config import Config
+from FACodec_AC.utils import get_mask_positions
 from huggingface_hub import hf_hub_download
 import sys
-# Append Amphion directory to sys.path so that the import works.
-sys.path.append(os.path.join(os.path.dirname(__file__), '..', 'Amphion'))
 
-from models.codec.ns3_codec import FACodecDecoder
+SCRIPT_LOCATION = os.environ.get("location")
+
+if SCRIPT_LOCATION == "server":
+    # If Amphion is located inside the Controlled_AC folder
+    from Amphion.models.codec.ns3_codec import FACodecDecoder
+else:
+    # If Amphion is outside the Controlled_AC folder at the same level
+    sys.path.append(os.path.join(os.path.dirname(__file__), '..', 'Amphion'))
+    from models.codec.ns3_codec import FACodecDecoder
 
 def main():
     # Seed for reproducibility
@@ -18,15 +28,19 @@ def main():
     random.seed(42)
     
     # Create train and test datasets/dataloaders
-    train_dataset = CodebookSequenceDataset(os.path.join(Config.data_dir, 'train'), 
-                                            os.path.join(Config.cond_dir, 'train'))
-    test_dataset  = CodebookSequenceDataset(os.path.join(Config.data_dir, 'test'),
-                                            os.path.join(Config.cond_dir, 'test'))
+    train_dataset = CodebookSequenceDataset(
+        os.path.join(Config.zc1_data_dir, 'train'),
+        os.path.join(Config.phoneme_cond_dir, 'train')
+    )
+    test_dataset  = CodebookSequenceDataset(
+        os.path.join(Config.zc1_data_dir, 'test'),
+        os.path.join(Config.phoneme_cond_dir, 'test')
+    )
     
     dataloader_train = DataLoader(train_dataset, batch_size=Config.batch_size, shuffle=True)
     dataloader_test  = DataLoader(test_dataset, batch_size=Config.batch_size, shuffle=False)
 
-        # Initialize the FACodecDecoder and load pretrained weights
+    # Initialize the FACodecDecoder and load its pretrained weights
     fa_decoder = FACodecDecoder(
         in_channels=256,
         upsample_initial_channel=1024,
@@ -44,37 +58,175 @@ def main():
         use_gr_residual_f0=True,
         use_gr_residual_phone=True,
     )
-    decoder_ckpt = hf_hub_download(repo_id="amphion/naturalspeech3_facodec", filename="ns3_facodec_decoder.bin")
+    decoder_ckpt = hf_hub_download(repo_id="amphion/naturalspeech3_facodec",
+                                   filename="ns3_facodec_decoder.bin")
     fa_decoder.load_state_dict(torch.load(decoder_ckpt))
     fa_decoder.eval()
 
     pretrained_codebook = fa_decoder.quantizer[1].layers[0].codebook
     pretrained_proj_layer = fa_decoder.quantizer[1].layers[0].out_proj
     
-    # Initialize the diffusion transformer model with the pretrained args
+    # Initialize the transformer model with the pretrained components.
     model = DiffusionTransformerModel(
         pretrained_codebook=pretrained_codebook,
         pretrained_proj_layer=pretrained_proj_layer,
-        std_file_path=os.path.join(Config.data_dir, 'stats', 'std.pt'),
+        std_file_path=os.path.join(Config.zc1_data_dir, 'stats', 'std.pt'),
         vocab_size=Config.VOCAB_SIZE,
         d_model=Config.d_model,
         nhead=Config.nhead,
         num_layers=Config.num_layers,
         d_ff=Config.d_ff,
         dropout=Config.dropout,
-        max_seq_len=Config.time_frames
+        max_seq_len=Config.max_seq_len
     )
     
-    train_diffusion_model(
-        model,
-        dataloader_train,
-        dataloader_test,
-        T=Config.T,
-        epochs=Config.epochs,
-        lr=Config.lr,
-        device=Config.device,
-        eval_epochs=Config.eval_epochs
-    )
+    # Inline training loop (integrating the content of train_diffusion_model)
+    optimizer = optim.Adam(model.parameters(), lr=Config.lr)
+    model.to(Config.device)
+    model.train()
+
+    writer = SummaryWriter(log_dir=Config.tensorboard_dir)
+    best_eval_loss = float('inf')
+
+    for epoch in range(Config.epochs):
+        total_loss = 0.0
+        correct_train = 0
+        total_masked_train = 0
+        num_batches = 0
+
+        # --- Training ---
+        for batch, padding_mask, padded_phone_ids, prosody_cond in dataloader_train:
+            optimizer.zero_grad()
+            x0 = batch.to(Config.device)             # discrete tokens
+            padding_mask = padding_mask.to(Config.device)
+            padded_phone_ids = padded_phone_ids.to(Config.device)
+            prosody_cond = prosody_cond.to(Config.device)
+            bsz, seq_len = x0.shape
+
+            # Determine which positions to mask (true = mask, false = no mask)
+            mask_positions = get_mask_positions(x0, r_range=Config.r_range, p_drop=Config.p_drop)
+
+            # Generate noise scaled by the precomputed std:
+            noise_level_value = random.uniform(Config.NOISE_MIN, Config.NOISE_MAX)
+            noise_level_value_norm = (noise_level_value - Config.NOISE_MIN) / (Config.NOISE_MAX - Config.NOISE_MIN)
+            noise_level = torch.full((bsz, 1), noise_level_value_norm, device=Config.device, dtype=torch.float)
+            feature_dim = model.proj_to_256.out_features
+            noise_scaled = torch.randn(bsz, seq_len, feature_dim, device=x0.device) * (noise_level_value * model.precomputed_std)
+
+            # Forward pass: inject noise at the specified masked positions.
+            logits = model(
+                x=x0, 
+                padded_phone_ids=padded_phone_ids, 
+                noise_level=noise_level,
+                mask_positions=mask_positions, 
+                padding_mask=padding_mask, 
+                noise_scaled=noise_scaled,
+                prosody_cond=prosody_cond
+            )
+            bsz, seq_len, vocab_sz = logits.shape
+            logits_flat = logits.view(-1, vocab_sz)  # [B*T, V]
+            x0_flat = x0.view(-1)                      # [B*T]
+            mask_flat = mask_positions.view(-1).float()
+
+            all_ce = F.cross_entropy(logits_flat, x0_flat, reduction='none')
+
+            masked_sum = (all_ce * mask_flat).sum()
+            num_masked = mask_flat.sum().clamp_min(1.0)
+            masked_loss = masked_sum / num_masked
+
+            unmask_sum = (all_ce * (1.0 - mask_flat)).sum()
+            num_unmasked = ((1.0 - mask_flat).sum()).clamp_min(1.0)
+            unmasked_loss = unmask_sum / num_unmasked
+
+            loss = masked_loss + Config.lambda_unmasked * unmasked_loss
+            loss.backward()
+            optimizer.step()
+            total_loss += loss.item()
+
+            predicted = logits.argmax(dim=-1)
+            correct = ((predicted == x0) & mask_positions).sum().item()
+            total = mask_positions.sum().item()
+            correct_train += correct
+            total_masked_train += total
+
+            num_batches += 1
+
+        avg_loss = total_loss / max(num_batches, 1)
+        train_accuracy = correct_train / (total_masked_train + 1e-9)
+        print(f"Epoch {epoch+1}/{Config.epochs}, Loss={avg_loss:.4f}, Train Accuracy={train_accuracy:.4f}")
+        writer.add_scalar("Loss/Train", avg_loss, epoch+1)
+        writer.add_scalar("Accuracy/Train", train_accuracy, epoch+1)
+
+        # --- Evaluation ---
+        if (epoch+1) % Config.eval_epochs == 0:
+            model.eval()
+            total_test_loss = 0.0
+            correct_eval = 0
+            total_masked_eval = 0
+            test_batches = 0
+            with torch.no_grad():
+                for test_batch, padding_mask, test_phone_ids, prosody_cond_test in dataloader_test:
+                    x0 = test_batch.to(Config.device)
+                    padding_mask = padding_mask.to(Config.device)
+                    padded_phone_ids = test_phone_ids.to(Config.device)
+                    prosody_cond = prosody_cond_test.to(Config.device)
+                    bsz, seq_len = x0.shape
+
+                    mask_positions = get_mask_positions(x0, r_range=Config.r_range, p_drop=Config.p_drop)
+
+                    noise_val = random.uniform(Config.NOISE_MIN, Config.NOISE_MAX)
+                    noise_level = torch.full((bsz, 1),
+                                             (noise_val - Config.NOISE_MIN) / (Config.NOISE_MAX - Config.NOISE_MIN),
+                                             device=Config.device)
+                    feat_dim = model.proj_to_256.out_features
+                    noise_scaled = torch.randn(bsz, seq_len, feat_dim, device=Config.device) * (noise_val * model.precomputed_std)
+
+                    logits = model(
+                        x=x0, 
+                        padded_phone_ids=padded_phone_ids, 
+                        noise_level=noise_level,
+                        mask_positions=mask_positions, 
+                        padding_mask=padding_mask, 
+                        noise_scaled=noise_scaled,
+                        prosody_cond=prosody_cond
+                    )
+                    V = logits.size(-1)
+                    logits_flat = logits.view(-1, V)
+                    x0_flat = x0.view(-1)
+                    mask_flat = mask_positions.view(-1).float()
+                    ce_flat = F.cross_entropy(logits_flat, x0_flat, reduction='none')
+
+                    masked_loss = (ce_flat * mask_flat).sum() / (mask_flat.sum().clamp_min(1.0))
+                    unmask_loss = (ce_flat * (1 - mask_flat)).sum() / ((1 - mask_flat).sum().clamp_min(1.0))
+                    loss_test = masked_loss + Config.lambda_unmasked * unmask_loss
+
+                    total_test_loss += loss_test.item()
+
+                    predicted_test = logits.argmax(dim=-1)
+                    correct_batch = ((predicted_test == x0) & mask_positions).sum().item()
+                    total_batch = mask_positions.sum().item()
+                    correct_eval += correct_batch
+                    total_masked_eval += total_batch
+
+                    test_batches += 1
+            
+            avg_test_loss = total_test_loss / max(test_batches, 1)
+            test_accuracy = correct_eval / (total_masked_eval + 1e-9)
+            print(f"Epoch {epoch+1}/{Config.epochs}, Eval Test Loss={avg_test_loss:.4f}, Eval Accuracy={test_accuracy:.4f}")
+            writer.add_scalar("Loss/Eval", avg_test_loss, epoch+1)
+            writer.add_scalar("Accuracy/Eval", test_accuracy, epoch+1)
+            
+            # Save checkpoint if evaluation loss improves
+            if avg_test_loss < best_eval_loss:
+                checkpoint_full_path = Config.checkpoint_path
+                checkpoint_dir = os.path.dirname(checkpoint_full_path)
+                os.makedirs(checkpoint_dir, exist_ok=True)
+                torch.save(model.state_dict(), checkpoint_full_path)
+                print(f"Checkpoint saved at {checkpoint_full_path} at epoch {epoch+1} with Eval Loss={avg_test_loss:.4f}")
+                best_eval_loss = avg_test_loss
+            model.train()
+    
+    writer.close()
 
 if __name__ == "__main__":
     main()
