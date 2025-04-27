@@ -12,14 +12,13 @@ class CodebookSequenceDataset(Dataset):
     Loads .pt files (containing {'tokens': ..., 'mask': ...}) from a directory.
     """
     def __init__(self, data_dir, wav2vec_cond_dir=None):
-            self.files = glob.glob(os.path.join(data_dir, "*.pt"))
-            self.wav2vec_cond_dir = wav2vec_cond_dir  # store wav2vec condition directory if provided
-            if wav2vec_cond_dir is not None:
-                wav2vec_files = glob.glob(os.path.join(wav2vec_cond_dir, "*.pt"))
-                wav2vec_file_names = {os.path.basename(f) for f in wav2vec_files}
-                for file in self.files:
-                    if os.path.basename(file) not in wav2vec_file_names:
-                        raise ValueError(f"File {os.path.basename(file)} not found in wav2vec_cond_dir.")
+        self.files = glob.glob(os.path.join(data_dir, "*.pt"))
+        self.wav2vec_cond_dir = wav2vec_cond_dir  # store wav2vec condition directory if provided
+        if wav2vec_cond_dir is not None:
+            wav2vec_files = glob.glob(os.path.join(wav2vec_cond_dir, "*.pt"))
+            wav2vec_file_names = {os.path.basename(f) for f in wav2vec_files}
+            # Filter self.files to only include files present in wav2vec_cond_dir.
+            self.files = [f for f in self.files if os.path.basename(f) in wav2vec_file_names]
 
     def __len__(self):
         return len(self.files)
@@ -33,7 +32,7 @@ class CodebookSequenceDataset(Dataset):
             # load the corresponding wav2vec conditioning file with the same basename
             cond_path = os.path.join(self.wav2vec_cond_dir, os.path.basename(self.files[idx]))
             cond_data = torch.load(cond_path)
-            return data['tokens'], data['mask'], cond_data
+            return data['tokens'], data['mask'], cond_data, data['prosody']
         return data['tokens'], data['mask']
 
 class ClassificationDataset(Dataset):

@@ -1,12 +1,24 @@
 import torch
-from transformers import Wav2Vec2Processor, Wav2Vec2ForCTC
+from transformers import (
+    Wav2Vec2FeatureExtractor,
+    Wav2Vec2CTCTokenizer,
+    Wav2Vec2Processor,
+    Wav2Vec2ForCTC,
+)
 from FACodec_AC.utils import process_files_wav2vec
 import os
 
 def main():
     # Initialize device, processor, and model
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
-    w2v_processor = Wav2Vec2Processor.from_pretrained("facebook/wav2vec2-xlsr-53-espeak-cv-ft")
+    fe = Wav2Vec2FeatureExtractor.from_pretrained(
+    "facebook/wav2vec2-xlsr-53-espeak-cv-ft"
+        )
+    tok = Wav2Vec2CTCTokenizer.from_pretrained(
+    "facebook/wav2vec2-xlsr-53-espeak-cv-ft",
+    use_fast=False
+    )
+    w2v_processor = Wav2Vec2Processor(feature_extractor=fe, tokenizer=tok)
     w2v_model = Wav2Vec2ForCTC.from_pretrained("facebook/wav2vec2-xlsr-53-espeak-cv-ft").to(device)
     w2v_model.eval()
 

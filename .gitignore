@@ -69,3 +69,5 @@ env/
 # Log files
 logs/
 checkpoints/
+
+download_checkpoint.sh

@@ -1,7 +1,7 @@
 class Config:
     # Data and training parameters
     data_dir = '/home/yurii/Projects/AC/ljspeech/zc1_dataset'
-    cond_dir = '/home/yurii/Projects/AC/ljspeech/wav2vec_dataset'
+    cond_dir = '/home/yurii/Projects/AC/ljspeech/wav2vec_dataset_forced'
     checkpoint_dir = './checkpoints'
     tensorboard_dir = './tensorboard'
     
@@ -11,7 +11,7 @@ class Config:
     NOISE_MIN = 1.0
     NOISE_MAX = 3.5 # How much noise will be added to the input(soft masking)
 
-    batch_size = 8
+    batch_size = 4
     epochs = 100
     eval_epochs = 10
     checkpoint_epochs = 10
@@ -48,5 +48,7 @@ class ASRConfig:
     num_epochs = 30
     lr = 1e-4
     eval_epochs = 10
+    #PAD_ID = 29
+    #VOCAB_SIZE = 29
     PAD_ID = 392
     VOCAB_SIZE = 392

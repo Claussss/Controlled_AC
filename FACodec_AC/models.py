@@ -22,6 +22,13 @@ class ConvFeedForward(nn.Module):
         self.relu = nn.ReLU()
 
     def forward(self, x):
+        """
+        Parameters:
+            x (Tensor [batch_size, d_model, seq_len])
+        
+        Returns:
+            Tensor [batch_size, d_model, seq_len]
+        """
         # x: [batch_size, d_model, seq_len]
         out = self.conv1(x)
         out = self.relu(out)
@@ -29,332 +36,197 @@ class ConvFeedForward(nn.Module):
         out = self.conv2(out)
         return self.dropout(out)
 
+# Conditional LayerNorm for FiLM-style gating
+class CondLayerNorm(nn.Module):
+    def __init__(self, d_model: int):
+        super().__init__()
+        # base layernorm without affine
+        self.norm = nn.LayerNorm(d_model, elementwise_affine=False)
+        # projections to generate gamma and beta from cond input
+        self.gamma_proj = nn.Linear(d_model, d_model)
+        self.beta_proj  = nn.Linear(d_model, d_model)
+
+    def forward(self, x: torch.Tensor, cond: torch.Tensor) -> torch.Tensor:
+        # x: [B, T, D], cond: [B, T, 2D] -> split into gamma, beta
+        gamma, beta = cond.chunk(2, dim=-1)
+        x_norm = self.norm(x)
+        return x_norm * (1 + gamma) + beta
+
 class CustomTransformerEncoderLayer(nn.Module):
     """
-    A custom Transformer encoder layer that uses our ConvFeedForward.
+    A custom Transformer encoder layer with ConvFeedForward and conditional LayerNorm.
     """
-    def __init__(self, d_model=1024, nhead=8, d_ff=2048, dropout=0.1):
+    def __init__(self, d_model: int=1024, nhead: int=8, d_ff: int=2048, dropout: float=0.1):
         super().__init__()
         self.self_attn = nn.MultiheadAttention(d_model, nhead, dropout=dropout, batch_first=True)
         self.norm1 = nn.LayerNorm(d_model)
-        self.norm2 = nn.LayerNorm(d_model)
+        # conditional LayerNorm for post-FFN
+        self.norm2 = CondLayerNorm(d_model)
         self.dropout = nn.Dropout(dropout)
         self.conv_ff = ConvFeedForward(d_model=d_model, d_ff=d_ff, kernel_size=3, dropout=dropout)
 
-    def forward(self, x, src_key_padding_mask=None):
-        # Self-attention
+    def forward(
+        self,
+        x: torch.Tensor,
+        cond: torch.Tensor,
+        src_key_padding_mask: torch.BoolTensor = None
+    ) -> torch.Tensor:
+        # Self-attention block
         attn_out, _ = self.self_attn(x, x, x, key_padding_mask=src_key_padding_mask)
         x = x + self.dropout(attn_out)
         x = self.norm1(x)
-        # Conv feed-forward
-        x_t = x.transpose(1, 2)  # [batch, d_model, seq_len]
+
+        # Conv feed-forward block
+        x_t = x.transpose(1, 2)  # [B, D, T]
         ff_out = self.conv_ff(x_t)
-        ff_out = ff_out.transpose(1, 2)  # back to [batch, seq_len, d_model]
+        ff_out = ff_out.transpose(1, 2)  # [B, T, D]
         x = x + self.dropout(ff_out)
-        return self.norm2(x)
+
+        # Conditional LayerNorm with FiLM parameters
+        return self.norm2(x, cond)
 
 class CustomTransformerEncoder(nn.Module):
     """
-    Stacks multiple CustomTransformerEncoderLayers.
+    Stacks multiple Conditional Transformer encoder layers.
     """
-    def __init__(self, num_layers=12, d_model=1024, nhead=8, d_ff=2048, dropout=0.1):
+    def __init__(self, num_layers: int=12, d_model: int=1024, nhead: int=8, d_ff: int=2048, dropout: float=0.1):
         super().__init__()
         self.layers = nn.ModuleList([
             CustomTransformerEncoderLayer(d_model, nhead, d_ff, dropout)
             for _ in range(num_layers)
         ])
 
-    def forward(self, x, src_key_padding_mask=None):
+    def forward(
+        self,
+        x: torch.Tensor,
+        cond: torch.Tensor,
+        src_key_padding_mask: torch.BoolTensor = None
+    ) -> torch.Tensor:
+        # cond: [B, T, 2D]
         for layer in self.layers:
-            x = layer(x, src_key_padding_mask=src_key_padding_mask)
+            x = layer(x, cond, src_key_padding_mask=src_key_padding_mask)
         return x
 
 class DiffusionTransformerModel(nn.Module):
-    def __init__(self,
-                 pretrained_codebook,
-                 pretrained_proj_layer,
-                 std_file_path,
-                 vocab_size=Config.VOCAB_SIZE,
-                 d_model=1024,
-                 nhead=8,
-                 num_layers=12,
-                 d_ff=2048,
-                 dropout=0.1,
-                 max_seq_len=4096):
+    def __init__(
+        self,
+        pretrained_codebook: nn.Embedding,
+        pretrained_proj_layer: nn.Module,
+        std_file_path: str,
+        vocab_size: int = Config.VOCAB_SIZE,
+        d_model: int = 1024,
+        nhead: int = 8,
+        num_layers: int = 12,
+        d_ff: int = 2048,
+        dropout: float = 0.1,
+        max_seq_len: int = 4096
+    ):
         super().__init__()
         self.d_model = d_model
-        self.std_file_path = std_file_path
 
-        # Copy pretrained codebook and projection layer
+        # frozen codebook & projection
         self.codebook = nn.Embedding.from_pretrained(pretrained_codebook.weight.clone(), freeze=True)
-        # Use the pretrained projection layer directly and freeze it
         self.proj_to_256 = pretrained_proj_layer
-        for param in self.proj_to_256.parameters():
-            param.requires_grad = False  # Freeze the pretrained projection layer
-        # Additional projection layer to go from 256 to d_model
-        self.proj_to_d_model = nn.Linear(pretrained_proj_layer.out_features, d_model)
+        for p in self.proj_to_256.parameters(): p.requires_grad = False
+        self.proj_to_d_model = nn.Linear(self.proj_to_256.out_features, d_model)
 
+        # positional embeddings
         self.pos_embedding = nn.Embedding(max_seq_len, d_model)
+
+        # conditional FiLM MLP: input [mask_bit, noise_level]
+        self.cond_mlp = nn.Sequential(
+            nn.Linear(2, d_model * 2),
+            nn.ReLU(),
+        )
+
+        # prosody conditioning projection: prosody_cond is (B, 256, seq_len)
+        # After transpose it becomes (B, seq_len, 256); we want (B, seq_len, 2*d_model)
+        self.prosody_proj = nn.Linear(256, d_model * 2)
+
+        self.acoustic_proj = nn.Linear(256, d_model * 2)
+
+
+        # phone conditioning
+        self.phone_embedding = nn.Embedding(ASRConfig.VOCAB_SIZE + 1, d_model)
+        self.phone_proj = nn.Linear(d_model, d_model * 2)
+
+        # Extra dropout for conditioning signals (set to 0.1)
+        self.dropout_cond = nn.Dropout(0.1)
+
+        # encoder & output
         self.encoder = CustomTransformerEncoder(num_layers, d_model, nhead, d_ff, dropout)
         self.fc_out = nn.Linear(d_model, vocab_size)
 
-        # Load std from file
-        self.register_buffer("precomputed_std", torch.load(self.std_file_path))
+        # load std
+        self.register_buffer("precomputed_std", torch.load(std_file_path))
 
-        # Conditioning
-        self.phone_embedding = nn.Embedding(ASRConfig.VOCAB_SIZE+1, d_model) 
-        self.t_proj = nn.Linear(1, d_model)
-        self.noise_proj = nn.Linear(1, d_model)
-
-        self.phone_weight = nn.Parameter(torch.tensor(1.0))
-        self.t_weight = nn.Parameter(torch.tensor(1.0))
-        self.noise_weight = nn.Parameter(torch.tensor(1.0))
-
-
-
-    def forward(self, x, padded_phone_ids, t, noise_level,mask_positions=None, padding_mask=None, noise_scaled=None):
-        """
-        x            : [batch_size, seq_len] of discrete IDs.
-        mask_positions: [batch_size, seq_len] boolean tensor indicating where to add noise.
-        padding_mask : [batch_size, seq_len] where 1 indicates padding and 0 valid tokens.
-        noise_scaled : [batch_size, seq_len, 256] noise to add to the masked tokens.
-        """
+    def forward(self,
+                x: torch.LongTensor,
+                padded_phone_ids: torch.LongTensor,
+                t: torch.FloatTensor,
+                noise_level: torch.FloatTensor,
+                mask_positions: torch.BoolTensor = None,
+                padding_mask: torch.BoolTensor = None,
+                noise_scaled: torch.Tensor = None,
+                prosody_cond: torch.Tensor = None  
+    ) -> torch.Tensor:
         bsz, seq_len = x.size()
-        pos_ids = torch.arange(seq_len, device=x.device).unsqueeze(0)
+        device = x.device
 
-        # Replace pad tokens with a valid index (0) so they can be looked up.
-        # (1026 is not valid codebook index). We will zero them out later.
+        # position IDs
+        pos_ids = torch.arange(seq_len, device=device).unsqueeze(0)
+
+        # sanitize pad tokens
         x_mod = x.clone()
         if padding_mask is not None:
-            x_mod[padding_mask == 1] = 0
+            x_mod = x_mod.masked_fill(padding_mask, 0)
 
-        # Look up code vectors for all positions.
+        # codebook & upsample
         code_vecs = self.codebook(x_mod)
-
-        # Upscale to 256 dimensions using the frozen pretrained projection layer.
-        code_vecs_upscaled = self.proj_to_256(code_vecs)  # [bsz, seq_len, 256]
-
-        # Zero out the code vectors corresponding to padded positions.
+        code_up   = self.proj_to_256(code_vecs)
         if padding_mask is not None:
-            code_vecs_upscaled[padding_mask == 1] = 0
+            code_up = code_up.masked_fill(padding_mask.unsqueeze(-1), 0.0)
 
-        # Add noise to the selected mask positions.
-        # Use noise_scaled passed from train_diffusion; if None, do not add noise.
+        # add noise
         if noise_scaled is None:
-            noise_scaled = torch.zeros_like(code_vecs_upscaled)
-        code_vecs_noisy = code_vecs_upscaled.clone()
+            noise_scaled = torch.zeros_like(code_up)
+        code_noisy = code_up.clone()
         if mask_positions is not None:
-            code_vecs_noisy[mask_positions] += noise_scaled[mask_positions]
+            code_noisy[mask_positions] += noise_scaled[mask_positions]
 
-        # Project to d_model dimension.
-        token_emb = self.proj_to_d_model(code_vecs_noisy)  # [bsz, seq_len, d_model]
+        # project to model dim
+        token_emb = self.proj_to_d_model(code_noisy)      # [B,T,D]
+        pos_emb   = self.pos_embedding(pos_ids)           # [1,T,D]
 
-        # Add positional embeddings.
-        pos_emb = self.pos_embedding(pos_ids)  # [1, seq_len, d_model]
-        phone_emb = self.phone_embedding(padded_phone_ids)  # shape: [bsz, seq_len, d_model]
-        t_emb = self.t_proj(t).unsqueeze(1)         # shape: [bsz, 1, d_model]
-        noise_emb = self.noise_proj(noise_level).unsqueeze(1)  # shape: [bsz, 1, d_model]
+        # --- Early Fusion: Add phone embeddings directly ---
+        # Obtain phone embeddings and apply dropout
+        phone_emb = self.phone_embedding(padded_phone_ids)  # [B, T, D]
+        phone_emb = self.dropout_cond(phone_emb)
+        h = token_emb + pos_emb + phone_emb
 
-        global_emb = self.t_weight * t_emb + self.noise_weight * noise_emb
+        # --- Build FiLM conditioning tensor ---
+        m = mask_positions.float().unsqueeze(-1) if mask_positions is not None else torch.zeros(bsz, seq_len, 1, device=device)
+        n = noise_level.unsqueeze(-1).expand(-1, seq_len, -1)
+        cond_input = torch.cat([m, n], dim=-1)            # [B,T,2]
+        γβ = self.cond_mlp(cond_input)                    # [B,T,2D]
 
-        h = token_emb + pos_emb + self.phone_weight * phone_emb  + global_emb 
+        # Incorporate prosody conditioning if provided:
+        if prosody_cond is not None:
+            # prosody_cond: (B, 256, seq_len) -> transpose to (B, seq_len, 256)
+            prosody_in = prosody_cond.transpose(1, 2)
+            # Apply dropout to prosody input
+            prosody_in = self.dropout_cond(prosody_in)
+            prosody_γβ = self.prosody_proj(prosody_in)         # [B, T, 2D]
+            γβ = γβ + prosody_γβ
 
-        # Pass through transformer encoder.
-        h = self.encoder(h, src_key_padding_mask=padding_mask)
+        phone_film = self.phone_proj(phone_emb)                # [B, T, 2D]
+        γβ = γβ + phone_film
+
+        # Pass through conditional encoder using the combined FiLM parameters:
+        h = self.encoder(h, γβ, src_key_padding_mask=padding_mask)
+
         return self.fc_out(h)
-    
-class SelfAttentionPoolingClassifier(nn.Module):
-    def __init__(self, pretrained_codebook, pretrained_proj_layer,
-                 num_classes=2, input_channels=256, attention_hidden_dim=128):
-        super(SelfAttentionPoolingClassifier, self).__init__()
-        # Freeze pretrained components
-        self.codebook = nn.Embedding.from_pretrained(pretrained_codebook.weight.clone(), freeze=True)
-        self.proj_to_256 = pretrained_proj_layer
-        for param in self.proj_to_256.parameters():
-            param.requires_grad = False
-        
-        # Attention module: project each 256-dim frame to a scalar score.
-        self.attention = nn.Sequential(
-            nn.Linear(input_channels, attention_hidden_dim),
-            nn.Tanh(),
-            nn.Linear(attention_hidden_dim, 1)
-        )
-        # Classification head maps pooled representation to logits.
-        self.classifier = nn.Linear(input_channels, num_classes)
-        
-    def forward(self, token_ids, pad_mask=None):
-        """
-        token_ids: Tensor of shape (batch_size, seq_len) containing token indices.
-        pad_mask : Tensor of shape (batch_size, seq_len) where 1 indicates pad tokens.
-        """
-        # Replace pad tokens with a valid index (here 0) for codebook lookup.
-        token_ids_mod = token_ids.clone()
-        if pad_mask is not None:
-            token_ids_mod[pad_mask == 1] = 0
-        
-        # Get code vectors and upscale them.
-        # code_vectors shape: (B, seq_len, embed_dim)
-        code_vectors = self.codebook(token_ids_mod)
-        # z_c shape: (B, seq_len, 256)
-        z_c = self.proj_to_256(code_vectors)
-        
-        # Compute raw attention scores per frame.
-        # attn_scores: (B, seq_len, 1)
-        attn_scores = self.attention(z_c)
-        if pad_mask is not None:
-            # Mask out padded positions (set score to -inf so softmax ignores them)
-            attn_scores = attn_scores.masked_fill(pad_mask.unsqueeze(-1).bool(), float("-inf"))
-        
-        # Softmax over time dimension.
-        attn_weights = F.softmax(attn_scores, dim=1)  # (B, seq_len, 1)
-        
-        # Compute weighted sum of frame features.
-        pooled = (z_c * attn_weights).sum(dim=1)  # (B, 256)
-        logits = self.classifier(pooled)          # (B, num_classes)
-        return logits, attn_weights.squeeze(-1)
-    
-class ProjectionHead(nn.Module):
-    def __init__(self, in_features=5003, out_features=392):
-        super().__init__()
-        self.linear = nn.Linear(in_features, out_features)
-        # self.linear = nn.Sequential(
-        #                 nn.Linear(5003, 1024),
-        #                 nn.ReLU(),
-        #                 nn.Linear(1024, 392)
-        #             )
-    def forward(self, x):
-        return self.linear(x)
 
-class ASRPhonemePredictor(nn.Module):
-    """
-    A new ASR module that uses a transformer encoder to predict phonemes from zc1.
-    Input:
-        x: [B, T, 256] representations (zc1).
-    Output:
-        Logits of shape [B, T, phoneme_vocab] for phoneme predictions.
-    """
-    def __init__(self,
-                 input_dim=256,
-                 d_model=256,
-                 nhead=4,
-                 num_layers=4,
-                 dim_feedforward=512,
-                 dropout=0.1,
-                 phoneme_vocab=50,
-                 max_seq_len=4096):
-        super().__init__()
-        # Project input features to d_model dimension.
-        self.input_proj = nn.Linear(input_dim, d_model)
-        # Positional embeddings
-        self.pos_embedding = nn.Embedding(max_seq_len, d_model)
-        # Transformer encoder using PyTorch's built-in module.
-        encoder_layer = nn.TransformerEncoderLayer(d_model=d_model,
-                                                   nhead=nhead,
-                                                   dim_feedforward=dim_feedforward,
-                                                   dropout=dropout,
-                                                   batch_first=True)
-        self.encoder = nn.TransformerEncoder(encoder_layer, num_layers=num_layers)
-        # Final classification layer predicts phoneme logits for each time step.
-        self.fc_out = nn.Linear(d_model, phoneme_vocab)
-
-    def forward(self, x):
-        # x: [B, T, input_dim] (expected to be [B, T, 256])
-        x = self.input_proj(x)  # now [B, T, d_model]
-        seq_len = x.size(1)
-        # Create positional indices and lookup embeddings.
-        pos_ids = torch.arange(seq_len, device=x.device).unsqueeze(0)
-        pos_emb = self.pos_embedding(pos_ids)
-        x = x + pos_emb
-        # Pass through transformer encoder.
-        x = self.encoder(x)
-        logits = self.fc_out(x)
-        return logits
-
-class ASRModel(nn.Module):
-    """
-    Updated ASRModel now uses the new ASRPhonemePredictor (instead of using a frozen phone_predictor).
-    It receives zc1 [B, T, 256], obtains phoneme logits and then projects them using the projection head.
-    """
-    def __init__(self, asr_predictor, proj_head):
-        super().__init__()
-        self.asr_predictor = asr_predictor
-        self.proj_head = proj_head
-
-    def forward(self, zc1):
-        # zc1: [B, T, 256]
-        phoneme_logits = self.asr_predictor(zc1)  # [B, T, phoneme_vocab]
-        # If needed, project phoneme logits; the projection head should be adapted accordingly.
-        proj_logits = self.proj_head(phoneme_logits)  # expected [B, T, X]
-        return proj_logits
-    
-
-def train_classifier(model, train_dataloader, eval_dataloader, epochs=1, lr=1e-4, device='cuda', eval_epochs=5):
-    optimizer = optim.Adam(model.parameters(), lr=lr)
-    criterion = nn.CrossEntropyLoss()
-    model.to(device)
-    writer = SummaryWriter(log_dir=Config.tensorboard_dir)
-    best_eval_loss = float('inf')
-
-    for epoch in range(epochs):
-        model.train()
-        total_loss = 0.0
-        num_batches = 0
-
-        for tokens, pad_mask, labels in train_dataloader:
-            optimizer.zero_grad()
-            tokens = tokens.to(device)
-            pad_mask = pad_mask.to(device)
-            labels = labels.to(device)
-            
-            logits, _ = model(tokens, pad_mask=pad_mask)
-            loss = criterion(logits, labels)
-            loss.backward()
-            optimizer.step()
-            
-            total_loss += loss.item()
-            num_batches += 1
-
-        avg_loss = total_loss / max(num_batches, 1)
-        print(f"Epoch {epoch+1}/{epochs}, Loss: {avg_loss:.4f}")
-        writer.add_scalar("Loss/Train", avg_loss, epoch+1)
-
-        # Evaluation phase every eval_epochs epochs.
-        if (epoch+1) % eval_epochs == 0:
-            model.eval()
-            total_eval_loss = 0.0
-            eval_batches = 0
-            correct = 0
-            total = 0
-            with torch.no_grad():
-                for tokens, pad_mask, labels in eval_dataloader:
-                    tokens = tokens.to(device)
-                    pad_mask = pad_mask.to(device)
-                    labels = labels.to(device)
-                    
-                    logits, _ = model(tokens, pad_mask=pad_mask)
-                    loss = criterion(logits, labels)
-                    total_eval_loss += loss.item()
-                    eval_batches += 1
-                    
-                    preds = logits.argmax(dim=-1)
-                    correct += (preds == labels).sum().item()
-                    total += labels.size(0)
-            
-            avg_eval_loss = total_eval_loss / max(eval_batches, 1)
-            eval_accuracy = correct / total
-            print(f"Eval Loss: {avg_eval_loss:.4f}, Eval Accuracy: {eval_accuracy:.4f}")
-            writer.add_scalar("Loss/Eval", avg_eval_loss, epoch+1)
-            writer.add_scalar("Accuracy/Eval", eval_accuracy, epoch+1)
-
-            if avg_eval_loss < best_eval_loss:
-                best_eval_loss = avg_eval_loss
-                # Save checkpoint (adjust the path as needed)
-                checkpoint_path = os.path.join(Config.checkpoint_dir, f"classifier.pt")
-                torch.save(model.state_dict(), checkpoint_path)
-                print(f"Checkpoint saved at {checkpoint_path} with Eval Loss: {avg_eval_loss:.4f}")
-            model.train()
-    
-    writer.close()
 
 def train_diffusion_model(model,
                           dataloader,
@@ -378,11 +250,12 @@ def train_diffusion_model(model,
         total_masked_train = 0
         num_batches = 0
 
-        for batch, padding_mask, padded_phone_ids in dataloader:
+        for batch, padding_mask, padded_phone_ids, prosody_cond in dataloader:
             optimizer.zero_grad()
             x0 = batch.to(device)   # discrete tokens
             padding_mask = padding_mask.to(device)  # True/False for padding
             padded_phone_ids = padded_phone_ids.to(device)  # condition: shape [bsz, seq_len]
+            prosody_cond = prosody_cond.to(device)  # condition: shape [bsz, 256, seq_len]
             bsz, seq_len = x0.shape
             # Generate random time t and choose mask fraction
             t_value = random.uniform(0, Config.max_token_fraction)
@@ -406,15 +279,33 @@ def train_diffusion_model(model,
 
             # Forward pass: add noise to masked positions
             logits = model(x0, padded_phone_ids, t, noise_level,
-               mask_positions=mask_positions, padding_mask=padding_mask, noise_scaled=noise_scaled)
+                           mask_positions=mask_positions, 
+                           padding_mask=padding_mask, 
+                           noise_scaled=noise_scaled,
+                           prosody_cond=prosody_cond)
             bsz, seq_len, vocab_sz = logits.shape
 
-            logits_flat = logits.view(bsz * seq_len, vocab_sz)
-            x0_flat = x0.view(-1)
-            mask_flat = mask_positions.view(-1)
+            # flatten everything
+            logits_flat   = logits.view(-1, vocab_sz)      # [B⋅T, V]
+            x0_flat       = x0.view(-1)                   # [B⋅T]
+            mask_flat     = mask_positions.view(-1).float()  # 1.0 = masked, 0.0 = unmasked
 
-            ce = criterion(logits_flat, x0_flat)
-            loss = ce.mul(mask_flat).sum() / (mask_flat.sum() + 1e-9)
+            # compute per-token cross-entropy
+            all_ce        = F.cross_entropy(logits_flat, x0_flat, reduction='none')  # [B⋅T]
+
+            # masked loss
+            masked_sum    = (all_ce * mask_flat       ).sum()
+            num_masked    = mask_flat.sum().clamp_min(1.0)
+            masked_loss   = masked_sum / num_masked
+
+            # unmasked “anchor” loss
+            unmask_sum    = (all_ce * (1.0 - mask_flat)).sum()
+            num_unmasked  = ((1.0 - mask_flat).sum()).clamp_min(1.0)
+            unmasked_loss = unmask_sum / num_unmasked
+
+            # combine
+            lambda_u      = 0.01   # small weight on the unmasked penalty
+            loss          = masked_loss + lambda_u * unmasked_loss
             loss.backward()
             optimizer.step()
             total_loss += loss.item()
@@ -440,41 +331,52 @@ def train_diffusion_model(model,
             total_masked_eval = 0
             test_batches = 0
             with torch.no_grad():
-                for test_batch, test_mask, test_padded_phone_ids in eval_dataloader:
-                    x0_test = test_batch.to(device)
-                    test_mask = test_mask.to(device)
-                    test_padded_phone_ids = test_padded_phone_ids.to(device)
-                    bsz, seq_len = x0_test.shape
-                    feature_dim = model.proj_to_256.out_features
+                for test_batch, padding_mask, test_phone_ids, prosody_cond_test in eval_dataloader:
+                    x0 = test_batch.to(device)
+                    pad_mask = padding_mask.to(device)
+                    phone_ids = test_phone_ids.to(device)
+                    prosody_cond = prosody_cond_test.to(device)  # condition: shape [bsz, 256, seq_len]
+                    bsz, T = x0.shape
 
-                    # Sample random t and compute mask fraction, as in training
+                    # 1) Sample t, mask, noise_level, noise_scaled exactly as in train
                     t_value = random.uniform(0, Config.max_token_fraction)
-                    t_value_norm = t_value / Config.max_token_fraction
-                    t = torch.full((bsz,1), t_value_norm, device=device, dtype=torch.float)
+                    t = torch.full((bsz,1), t_value/Config.max_token_fraction, device=device)
                     m_prob = diffusion_mask_schedule(t_value, T)
-                    mask_positions = get_mask_positions(x0_test, mask_prob=m_prob)
+                    mask_positions = get_mask_positions(x0, mask_prob=m_prob)
 
-                    # Sample random noise_level and generate scaled noise
-                    noise_level_value = random.uniform(Config.NOISE_MIN, Config.NOISE_MAX)
-                    noise_level_value_norm = (noise_level_value - Config.NOISE_MIN) \
-                                                / (Config.NOISE_MAX - Config.NOISE_MIN)
-                    noise_level = torch.full((bsz,1), noise_level_value_norm, device=device, dtype=torch.float)
-                    noise_scaled = torch.randn(bsz, seq_len, feature_dim, device=x0_test.device) \
-                        * (noise_level_value * model.precomputed_std)
+                    noise_val = random.uniform(Config.NOISE_MIN, Config.NOISE_MAX)
+                    noise_level = torch.full((bsz,1),
+                        (noise_val - Config.NOISE_MIN)/(Config.NOISE_MAX-Config.NOISE_MIN),
+                        device=device)
+                    feat_dim = model.proj_to_256.out_features
+                    noise_scaled = (torch.randn(bsz, T, feat_dim, device=device)
+                                    * (noise_val * model.precomputed_std))
 
-                    # Forward pass with noise injection and conditioning
-                    logits_test = model(x0_test, test_padded_phone_ids, t, noise_level,
-                                        mask_positions=mask_positions, padding_mask=test_mask, noise_scaled=noise_scaled)
-                    bsz, seq_len, vocab_sz = logits_test.shape
-                    logits_test_flat = logits_test.view(bsz * seq_len, vocab_sz)
-                    x0_test_flat = x0_test.view(-1)
-                    ce_test = criterion(logits_test_flat, x0_test_flat)
-                    loss_test = ce_test.mul(mask_positions.view(-1).float()).sum() / (mask_positions.sum() + 1e-9)
+                    # 2) Forward pass
+                    logits = model(x0, phone_ids, t, noise_level,
+                                mask_positions=mask_positions,
+                                padding_mask=pad_mask,
+                                noise_scaled=noise_scaled,
+                                prosody_cond=prosody_cond)
+                    V = logits.size(-1)
+
+                    # 3) Compute per-token CE
+                    logits_flat = logits.view(-1, V)
+                    x0_flat     = x0.view(-1)
+                    mask_flat   = mask_positions.view(-1).float()
+                    ce_flat     = F.cross_entropy(logits_flat, x0_flat, reduction='none')
+
+                    # 4) Masked loss
+                    masked_loss   = (ce_flat * mask_flat).sum() / (mask_flat.sum().clamp_min(1.0))
+                    # 5) Unmasked‐token anchor
+                    unmask_loss   = (ce_flat * (1-mask_flat)).sum() / ((1-mask_flat).sum().clamp_min(1.0))
+                    loss_test     = masked_loss + lambda_u * unmask_loss
+
                     total_test_loss += loss_test.item()
 
                     # Compute test accuracy for masked tokens
-                    predicted_test = logits_test.argmax(dim=-1)
-                    correct_batch = ((predicted_test == x0_test) & mask_positions).sum().item()
+                    predicted_test = logits.argmax(dim=-1)
+                    correct_batch = ((predicted_test == x0) & mask_positions).sum().item()
                     total_batch = mask_positions.sum().item()
                     correct_eval += correct_batch
                     total_masked_eval += total_batch
@@ -515,11 +417,113 @@ def mask_tokens(x, mask_prob, mask_id=Config.MASK_ID):
     x_masked[mask_positions] = mask_id
     return x_masked, mask_positions
 
-def get_mask_positions(x, mask_prob):
+# def get_mask_positions(
+#         x: torch.Tensor,
+#         mask_prob: float,
+#         *,
+#         min_size: int = 40,
+#         max_size: int = 100,
+#         max_global_attempts: int = 1000,
+# ) -> torch.Tensor:
+#     """
+#     Args
+#     ----
+#     x          : LongTensor [B, L] – token IDs
+#     mask_prob  : float        – target fraction of *each* sequence to mask
+#     min_size   : int          – minimum contiguous-chunk length
+#     max_size   : int          – maximum contiguous-chunk length
+#     Returns
+#     -------
+#     mask : BoolTensor [B, L] – True where x should be masked (never on PAD)
+#     """
+
+#     B, L = x.shape
+#     device = x.device
+#     mask   = torch.zeros_like(x, dtype=torch.bool, device=device)
+
+#     # pre–compute once, avoids re-allocating each sequence
+#     idx = torch.arange(L, device=device)
+
+#     for b in range(B):
+#         target        = int(round(mask_prob * L))
+#         if target == 0:
+#             continue
+
+#         remaining     = target
+#         occupied      = torch.zeros(L, dtype=torch.bool, device=device)
+#         global_trials = 0
+
+#         # keep trying until we hit the budget or run out of space / attempts
+#         while remaining > 0 and global_trials < max_global_attempts:
+#             global_trials += 1
+
+#             # 1. sample size (never less than 1, at most remaining, capped by bounds)
+#             chunk_len = random.randint(min_size, max_size)
+#             chunk_len = max(1, min(chunk_len, remaining, L))
+
+#             # 2. find all contiguous gaps large enough to fit `chunk_len`
+#             free = (~occupied).nonzero(as_tuple=True)[0]        # 1-D tensor of indices
+#             if free.numel() == 0:
+#                 break                                           # nothing left to mask
+
+#             # find split points where the run is no longer consecutive
+#             diffs   = torch.diff(free)
+#             breaks  = torch.where(diffs != 1)[0] + 1            # 1-based indices
+
+#             # convert break-indices → segment-sizes
+#             #   e.g. len=10, breaks=[3,7]  →  sizes=[3,4,3]
+#             starts  = torch.cat([free.new_tensor([0]), breaks])
+#             ends    = torch.cat([breaks, free.new_tensor([free.numel()])])
+#             sizes   = (ends - starts).tolist()
+
+#             # finally slice into contiguous gaps
+#             gaps = torch.split(free, sizes)
+
+#             # keep only those gaps that can fit the chunk
+#             gaps = [g for g in gaps if g.numel() >= chunk_len]
+#             if not gaps:
+#                 break
+
+#             # 3. pick a gap & starting offset uniformly
+#             g        = gaps[random.randrange(len(gaps))]
+#             offset   = random.randrange(0, g.numel() - chunk_len + 1)
+#             start    = int(g[offset])
+#             end      = start + chunk_len
+
+#             # 4. apply chunk
+#             occupied[start:end] = True
+#             remaining          -= chunk_len
+
+#         # write result, excluding PAD tokens
+#         mask[b] = occupied & (x[b] != Config.PAD_ID)
+
+#     return mask
+
+def get_mask_positions(x: torch.Tensor, mask_prob, p_drop: float = 0.1) -> torch.Tensor:
     """
-    Returns a boolean tensor of shape x indicating which positions to mask.
-    We never alter x's discrete tokens; we just note positions for noise injection.
+    Args:
+        x      : LongTensor of token IDs of shape [B, T]
+        p_drop : float. With probability p_drop, the entire sequence is masked.
+                 Otherwise, a single contiguous segment is masked.
+                 For audio, r ~ Uniform(0.7, 1.0) determines the segment length as r * T.
+                 
+    Returns:
+        mask   : BoolTensor of shape [B, T] where masked positions are True and unmasked are False,
+                 excluding PAD tokens (those with value Config.PAD_ID).
     """
-    valid = x != Config.PAD_ID
-    rand = torch.rand_like(x, dtype=torch.float)
-    return (rand < mask_prob) & valid
+    B, T = x.shape
+    device = x.device
+    mask = torch.zeros((B, T), dtype=torch.bool, device=device)
+    
+    for b in range(B):
+        if random.random() < p_drop:
+            mask[b] = True
+        else:
+            r = random.uniform(0.3, 0.4)
+            seg_len = max(1, int(round(r * T)))
+            start = random.randint(0, T - seg_len)
+            mask[b, start:start + seg_len] = True
+
+    # Exclude PAD tokens from being masked.
+    mask = mask & (x != Config.PAD_ID)
+    return mask

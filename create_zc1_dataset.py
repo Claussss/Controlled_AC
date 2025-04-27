@@ -45,7 +45,7 @@ if device == 'cuda':
     fa_encoder = fa_encoder.to(device)
     fa_decoder = fa_decoder.to(device)
 
-wav_dir = '/home/yurii/Projects/AC/l2_arctic/ASI/wav'
+wav_dir = '/home/yurii/Projects/AC/ljspeech/LJSpeech-1.1/wavs'
 all_wavs = glob.glob(os.path.join(wav_dir, '*.wav'))
 print(f"Found {len(all_wavs)} wav files.")
 
@@ -53,7 +53,7 @@ random.seed(42)
 train_files, test_files = train_test_split(all_wavs, test_size=0.1, random_state=42)
 print(f"Train files: {len(train_files)}, Test files: {len(test_files)}")
 
-output_dir = '/home/yurii/Projects/AC/l2_arctic/zc1_dataset'
+output_dir = '/home/yurii/Projects/AC/ljspeech/zc1_dataset'
 train_out = os.path.join(output_dir, 'train')
 test_out = os.path.join(output_dir, 'test')
 os.makedirs(train_out, exist_ok=True)
@@ -62,6 +62,6 @@ os.makedirs(test_out, exist_ok=True)
 if __name__ == "__main__":
     parallel = False
     print("Processing train set...")
-    process_files_facodec(train_files, fa_encoder, fa_decoder, train_out, device, workers=4, sequential=not parallel)
+    process_files_facodec(train_files, fa_encoder, fa_decoder, train_out, device)
     print("Processing test set...")
-    process_files_facodec(test_files, fa_encoder, fa_decoder, test_out, device, workers=4, sequential=not parallel)
+    process_files_facodec(test_files, fa_encoder, fa_decoder, test_out, device)
