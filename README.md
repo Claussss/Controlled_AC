@@ -1,50 +1,103 @@
-# Controlled Accent Conversion (AC) Project
+# Controlled Accent Conversion (ControlledAC)
 
-This repository provides code to create the zc1 dataset and train a diffusion transformer model on that dataset. It is organized into modules under the `FACodec_AC/` directory.
+This repository provides the code for preparing datasets and training a non-autoregressive transformer model for the Controlled Accent Conversion (AC) project. The model is conditioned on prosody, and phone features derived from LJSpeech.
 
 ## Directory Structure
-- **create_zc1_dataset.py**: Prepares the dataset by converting wav files into codebook index files (.py).  
-- **train.py**: Trains the diffusion transformer model on the dataset.  
-- **config.py**: Configuration definitions for paths, hyperparameters, etc.  
-- **dataset.py**: Logic for loading and preprocessing the dataset.  
-- **models.py**: Core model definition and training loop.  
-- **utils.py**: Additional utility functions.  
+
+- **create_facodec_dataset.py**  
+  Processes WAV files from an input folder (specified inside the script) and generates a `.pt` file for each WAV. Each file contains a dictionary with the following keys:
+  - `tokens`: zc1 codebook indices, padded with `Config.PAD_ID` up to `Config.max_seq_len`.
+  - `tokens_zc2`: zc2 codebook indices, padded similarly.
+  - `prosody`: codebook vectors for the prosody dimension, padded with zero vectors.
+  - `acoustic`: codebook vectors for acoustic details, padded with zero vectors.
+  - `mask`: a binary mask with ones at the padding token indexes.
+  
+- **create_phone_dataset.py**  
+  Processes WAV files (and their corresponding transcript) to create forced alignment data that the model will use for conditioning. Here, the ASR model used is `wav2vec2-xlsr-53-espeak-cv-ft`, which produces phone outputs (IPA), so the ASR vocabulary size is 392.  
+
+- **create_ASR_dataset.py**
+ Leverages the same ASR model as create_phone_dataset.py but directly uses its predicted output for conditioning, bypassing transcript retrieval and forced alignment.
+
+- **create_grapheme_dataset.py**  
+  Similar to `create_phone_dataset.py` but uses an ASR model that produces graphemes in English (with a vocabulary size of 32).
+
+- **train.py**  
+  Trains the diffusion transformer model using the dataset created by `create_facodec_dataset.py` and conditions it on phone/grapheme/ASR outputs (the best results have been obtained using the phone dataset). The training loop is integrated directly in this file.
+
+- **FACodec_AC/config.py**  
+  Contains the main configuration settings including paths, training parameters, model hyperparameters, and data constants. Adjust these as needed for your dataset location and training preferences.
+
+- **FACodec_AC/models.py**  
+  Contains the transformer model definition along with any custom layers and the integrated training code (if desired).
+
+- **FACodec_AC/dataset.py** and **FACodec_AC/utils.py**  
+  Include dataset loading routines and various utility functions (e.g., forced alignment, token padding, etc.).
 
 ## Installation
 
-1. Create a conda environment with Python 3.11:  
-   ```bash
-   conda create -n facodec python=3.11.11
+1. **Clone Amphion** (FACodec implementation)  
+   Outside of the ControlledAC folder (at the same directory level), clone the Amphion repository:  
    ```
-2. Activate the environment:  
-   ```bash
+   git clone https://github.com/open-mmlab/Amphion.git
+   ```
+
+2. **Create and Activate the Conda Environment**  
+   ```
+   conda create -n facodec python=3.11.11
    conda activate facodec
    ```
-3. Install the required packages:  
-   ```bash
+
+3. **Install Dependencies**  
+   Install the required Python packages:
+   ```
    pip install -r requirements.txt
    ```
 
 ## Dataset Creation
 
-To build your dataset, first download and unzip LJSpeech:
-```bash
-wget https://data.keithito.com/data/speech/LJSpeech-1.1.tar.bz2
-tar xfj LJSpeech-1.1.tar.bz2
-```
+1. **Download LJSpeech**  
+   Download and extract LJSpeech:
+   ```
+   wget https://data.keithito.com/data/speech/LJSpeech-1.1.tar.bz2
+   tar xfj LJSpeech-1.1.tar.bz2
+   ```
 
-Then edit `create_zc1_dataset.py` to point to the correct input wav directory (e.g., `LJSpeech-1.1/wavs`) and set the desired output path. Finally, run:
-```bash
-python create_zc1_dataset.py
-```
-Each wav file will produce a `.pt` file containing a dictionary with:
-- `"token"`: indices of the content codebook (excluding residual).  
-- `"mask"`: a boolean mask marking the padding tokens.
+2. **Generate FACodec Dataset**  
+   Edit the input and output directories in `create_facodec_dataset.py` as needed and run:
+   ```
+   python create_facodec_dataset.py
+   ```
+   Each WAV file will produce a `.pt` file containing a dictionary with:
+   - `tokens`
+   - `tokens_zc2`
+   - `prosody`
+   - `acoustic`
+   - `mask`
 
-## Usage
+3. **Generate Phone/Forced Alignment Data**  
+   For phoneme conditioning, open `create_phone_dataset.py` and adjust the paths or passes as needed. Then run:
+   ```
+   python create_phone_dataset.py
+   ```
+   This script processes the audio files along with transcript metadata and produces forced alignment data for conditioning (using phone outputs from wav2vec2-xlsr-53-espeak-cv-ft).
 
-1. (Optional) Generate the dataset using the steps above.
-2. Train the model locally:
-   ```bash
+
+## Training the Model
+
+1. **Update Configurations**  
+   Open `FACodec_AC/config.py` to update paths (such as `zc1_data_dir`, `phoneme_cond_dir`, and `checkpoint_path`) and training hyperparameters (e.g., `epochs`, `batch_size`, etc.) to suit your environment.
+
+2. **Run the Training Script**  
+   Once the dataset has been created and the configuration updated, run:
+   ```
    python train.py
    ```
+   This will train the transformer model. Training progress and checkpoints are saved as specified in the config file. The model is conditioned on the forced alignment data (phone/grapheme) generated earlier.
+
+## Additional Notes
+
+- **Checkpointing and Logs**:  
+  Model checkpoints are saved in the `checkpoints/` folder and training logs are written to the `tensorboard/` directory. Use TensorBoard to monitor training progress.
+
+
+
