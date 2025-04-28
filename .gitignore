@@ -71,3 +71,5 @@ logs/
 checkpoints/
 
 download_checkpoint.sh
+
+*.slurm
