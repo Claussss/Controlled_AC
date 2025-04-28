@@ -16,6 +16,7 @@ sys.path.append(os.path.join(os.path.dirname(__file__), '..', 'Amphion'))
 
 # Imports for FACodec
 from models.codec.ns3_codec import FACodecEncoder, FACodecDecoder
+SCRIPT_LOCATION = os.environ.get("location")
 
 # Setup FACodec models
 fa_encoder = FACodecEncoder(ngf=32, up_ratios=[2,4,5,5], out_channels=256)
@@ -46,7 +47,11 @@ if device == 'cuda':
     fa_encoder = fa_encoder.to(device)
     fa_decoder = fa_decoder.to(device)
 
-wav_dir = '/home/yurii/Projects/AC/ljspeech/LJSpeech-1.1/wavs'
+if SCRIPT_LOCATION == "server":
+    wav_dir = '/u/yurii/Projects/datasets/LJSpeech-1.1/wavs'
+else:
+    wav_dir = '/home/yurii/Projects/AC/ljspeech/LJSpeech-1.1/wavs'
+
 all_wavs = glob.glob(os.path.join(wav_dir, '*.wav'))
 print(f"Found {len(all_wavs)} wav files.")
 
@@ -54,7 +59,11 @@ random.seed(42)
 train_files, test_files = train_test_split(all_wavs, test_size=0.1, random_state=42)
 print(f"Train files: {len(train_files)}, Test files: {len(test_files)}")
 
-output_dir = '/home/yurii/Projects/AC/ljspeech/zc1_dataset'
+if SCRIPT_LOCATION == "server":
+    output_dir = '/u/yurii/Projects/datasets/LJSpeech-1.1/facodec_dataset'
+else:
+    output_dir = '/home/yurii/Projects/AC/ljspeech/zc1_dataset'
+    
 train_out = os.path.join(output_dir, 'train')
 test_out = os.path.join(output_dir, 'test')
 os.makedirs(train_out, exist_ok=True)

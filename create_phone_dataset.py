@@ -30,14 +30,14 @@ def main():
     # Define directories (update paths as needed)
     if SCRIPT_LOCATION == "server":
         audio_folder = "/u/yurii/Projects/datasets/LJSpeech-1.1/wavs"
-        embeddings_folder = "/u/yurii/Projects/datasets/LJSpeech-1.1/zc1_dataset"
+        embeddings_folder = "/u/yurii/Projects/datasets/LJSpeech-1.1/phone_dataset"
         output_folder = "/u/yurii/Projects/datasets/LJSpeech-1.1/wav2vec_dataset_forced_phoneme"
         transcript_file = "/u/yurii/Projects/datasets/LJSpeech-1.1/metadata.csv"
     else:
         # Define directories (update paths as needed)
         audio_folder = "/home/yurii/Projects/AC/ljspeech/LJSpeech-1.1/wavs"
-        embeddings_folder = "/home/yurii/Projects/AC/ljspeech/zc1_dataset"  # Contains train and test subdirectories
-        output_folder = "/home/yurii/Projects/AC/ljspeech/wav2vec_dataset_forced_phoneme"
+        embeddings_folder = "/home/yurii/Projects/AC/ljspeech/facodec_dataset"  # Contains train and test subdirectories
+        output_folder = "/home/yurii/Projects/AC/ljspeech/phone_dataset"
         transcript_file = "/home/yurii/Projects/AC/ljspeech/LJSpeech-1.1/metadata.csv"  # Updated to metadata.csv
 
     # Load transcript metadata.
