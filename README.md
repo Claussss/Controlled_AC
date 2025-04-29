@@ -15,12 +15,6 @@ This repository provides the code for preparing datasets and training a non-auto
 - **create_phone_dataset.py**  
   Processes WAV files (and their corresponding transcript) to create forced alignment data that the model will use for conditioning. Here, the ASR model used is `wav2vec2-xlsr-53-espeak-cv-ft`, which produces phone outputs (IPA), so the ASR vocabulary size is 392.  
 
-- **create_ASR_dataset.py**
- Leverages the same ASR model as create_phone_dataset.py but directly uses its predicted output for conditioning, bypassing transcript retrieval and forced alignment.
-
-- **create_grapheme_dataset.py**  
-  Similar to `create_phone_dataset.py` but uses an ASR model that produces graphemes in English (with a vocabulary size of 32).
-
 - **train.py**  
   Trains the diffusion transformer model using the dataset created by `create_facodec_dataset.py` and conditions it on phone/grapheme/ASR outputs (the best results have been obtained using the phone dataset). The training loop is integrated directly in this file.
 
