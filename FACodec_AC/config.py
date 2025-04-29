@@ -9,7 +9,7 @@ if SCRIPT_LOCATION == "server":
         zc1_data_dir = '/u/yurii/Projects/datasets/LJSpeech-1.1/facodec_dataset'
         phoneme_cond_dir = '/u/yurii/Projects/datasets/LJSpeech-1.1/phone_dataset'
         checkpoint_path = f'/u/yurii/Projects/Controlled_AC/checkpoints/model_exp_{exp_num}.pt'
-        tensorboard_dir = f'/u/yurii/Projects/Controlled_AC/exp_{exp_num}'
+        tensorboard_dir = f'/u/yurii/Projects/Controlled_AC/tensorboard/exp_{exp_num}'
         
         max_seq_len = 807 # aka max_seq_len
         r_range = (0.3, 0.4) # Defines the lower and upper bound for the percentage of tokens 

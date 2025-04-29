@@ -62,8 +62,8 @@ print(f"Train files: {len(train_files)}, Test files: {len(test_files)}")
 if SCRIPT_LOCATION == "server":
     output_dir = '/u/yurii/Projects/datasets/LJSpeech-1.1/facodec_dataset'
 else:
-    output_dir = '/home/yurii/Projects/AC/ljspeech/zc1_dataset'
-    
+    output_dir = '/home/yurii/Projects/AC/ljspeech/facodec_dataset'
+
 train_out = os.path.join(output_dir, 'train')
 test_out = os.path.join(output_dir, 'test')
 os.makedirs(train_out, exist_ok=True)

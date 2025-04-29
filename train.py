@@ -14,13 +14,8 @@ import sys
 
 SCRIPT_LOCATION = os.environ.get("location")
 
-if SCRIPT_LOCATION == "server":
-    # If Amphion is located inside the Controlled_AC folder
-    from Amphion.models.codec.ns3_codec import FACodecDecoder
-else:
-    # If Amphion is outside the Controlled_AC folder at the same level
-    sys.path.append(os.path.join(os.path.dirname(__file__), '..', 'Amphion'))
-    from models.codec.ns3_codec import FACodecDecoder
+sys.path.append(os.path.join(os.path.dirname(__file__), '..', 'Amphion'))
+from models.codec.ns3_codec import FACodecDecoder
 
 def main():
     # Seed for reproducibility
