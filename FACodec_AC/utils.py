@@ -385,7 +385,10 @@ def get_phone_forced_alignment(embedding_path, audio_folder, transcript_metadata
     )
     # aligned_ids is a tensor of phoneme‐CTC IDs (with repeats & blanks)
 
-    return aligned_ids, num_zeros, frame_scores, logits
+    if not inference:
+        return aligned_ids, num_zeros, frame_scores,
+    else:
+        return aligned_ids, num_zeros, frame_scores, logits
 
 def get_asr_alignment(embedding_path, audio_folder, device, w2v_model, w2v_processor):
     """
