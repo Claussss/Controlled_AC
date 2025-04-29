@@ -5,96 +5,105 @@ import torchaudio
 import tqdm
 from FACodec_AC.config import Config, ASRConfig
 from FACodec_AC.utils import load_transcript_metadata, get_phone_forced_alignment, interpolate_alignment, pad_token_sequence
-from phonemizer import phonemize
 from transformers import (
-    Wav2Vec2FeatureExtractor,
-    Wav2Vec2CTCTokenizer,
-    Wav2Vec2Processor,
-    Wav2Vec2ForCTC,
+	Wav2Vec2FeatureExtractor,
+	Wav2Vec2CTCTokenizer,
+	Wav2Vec2Processor,
+	Wav2Vec2ForCTC,
+	AutoTokenizer,
+	T5ForConditionalGeneration,
 )
+from nemo_text_processing.text_normalization.normalize import Normalizer
+import re
 
 SCRIPT_LOCATION = os.environ.get("location")
 
-
 def main():
-    # Initialize device and the forced alignment model pipeline.
-    device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
-    # 1) Load phoneme‐CTC Wav2Vec2
-    fe  = Wav2Vec2FeatureExtractor.from_pretrained("facebook/wav2vec2-xlsr-53-espeak-cv-ft")
-    tok = Wav2Vec2CTCTokenizer.from_pretrained("facebook/wav2vec2-xlsr-53-espeak-cv-ft", use_fast=False)
-    proc = Wav2Vec2Processor(feature_extractor=fe, tokenizer=tok)
-    model = Wav2Vec2ForCTC.from_pretrained("facebook/wav2vec2-xlsr-53-espeak-cv-ft").to(device)
-    model.eval()
-    target_sr = fe.sampling_rate  # typically 16000
+	# Initialize device and forced alignment pipeline.
+	device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+	fe  = Wav2Vec2FeatureExtractor.from_pretrained("facebook/wav2vec2-xlsr-53-espeak-cv-ft")
+	tok = Wav2Vec2CTCTokenizer.from_pretrained("facebook/wav2vec2-xlsr-53-espeak-cv-ft", use_fast=False)
+	proc = Wav2Vec2Processor(feature_extractor=fe, tokenizer=tok)
+	model = Wav2Vec2ForCTC.from_pretrained("facebook/wav2vec2-xlsr-53-espeak-cv-ft").to(device)
+	model.eval()
+	target_sr = fe.sampling_rate  # typically 16000
 
-    # Define directories (update paths as needed)
-    if SCRIPT_LOCATION == "server":
-        audio_folder = "/u/yurii/Projects/datasets/LJSpeech-1.1/wavs"
-        embeddings_folder = "/u/yurii/Projects/datasets/LJSpeech-1.1/phone_dataset"
-        output_folder = "/u/yurii/Projects/datasets/LJSpeech-1.1/wav2vec_dataset_forced_phoneme"
-        transcript_file = "/u/yurii/Projects/datasets/LJSpeech-1.1/metadata.csv"
-    else:
-        # Define directories (update paths as needed)
-        audio_folder = "/home/yurii/Projects/AC/ljspeech/LJSpeech-1.1/wavs"
-        embeddings_folder = "/home/yurii/Projects/AC/ljspeech/facodec_dataset"  # Contains train and test subdirectories
-        output_folder = "/home/yurii/Projects/AC/ljspeech/phone_dataset"
-        transcript_file = "/home/yurii/Projects/AC/ljspeech/LJSpeech-1.1/metadata.csv"  # Updated to metadata.csv
+    # Initialize heavy pipeline objects once.
+	pipeline = {
+		"normaliser": Normalizer(lang="en", input_case="cased", deterministic=True, post_process=True),
+		"regex": re.compile(r"[^a-z' ]"),
+		"LANG_TAG": "<eng-us>: ",
+		"dev_g2p": "cuda" if torch.cuda.is_available() else "cpu",
+		"g2p_tok": AutoTokenizer.from_pretrained("google/byt5-small"),
+		"g2p_net": T5ForConditionalGeneration.from_pretrained("charsiu/g2p_multilingual_byT5_tiny_16_layers_100").to(device).eval()
+	}
 
-    # Load transcript metadata.
-    transcript_metadata = load_transcript_metadata(transcript_file)
+	# Define directories
+	if SCRIPT_LOCATION == "server":
+		audio_folder = "/u/yurii/Projects/datasets/LJSpeech-1.1/wavs"
+		embeddings_folder = "/u/yurii/Projects/datasets/LJSpeech-1.1/phone_dataset"
+		output_folder = "/u/yurii/Projects/datasets/LJSpeech-1.1/wav2vec_dataset_forced_phoneme"
+		transcript_file = "/u/yurii/Projects/datasets/LJSpeech-1.1/metadata.csv"
+	else:
+		audio_folder = "/home/yurii/Projects/AC/ljspeech/LJSpeech-1.1/wavs"
+		embeddings_folder = "/home/yurii/Projects/AC/ljspeech/facodec_dataset"
+		output_folder = "/home/yurii/Projects/AC/ljspeech/phone_dataset"
+		transcript_file = "/home/yurii/Projects/AC/ljspeech/LJSpeech-1.1/metadata.csv"
 
-    # Process train embeddings forced alignment inline:
-    train_embeddings_folder = os.path.join(embeddings_folder, "train")
-    output_train_folder = os.path.join(output_folder, "train")
-    os.makedirs(output_train_folder, exist_ok=True)
-    print("Processing train forced alignment files...")
-    for file in tqdm.tqdm(os.listdir(train_embeddings_folder), desc="Processing forced alignment files"):
-        if file.endswith(".pt"):
-            embedding_path = os.path.join(train_embeddings_folder, file)
-            try:
-                # Inline functionality of process_files_text_phoneme_forced:
-                predicted_ids, num_zeros, _ = get_phone_forced_alignment(
-                    embedding_path,
-                    audio_folder,
-                    transcript_metadata,
-                    device,
-                    model,
-                    proc,
-                    target_sr
-                )
-                interpolated_phone_ids = interpolate_alignment(predicted_ids, num_zeros)
-                padded_phone_ids, pad_mask = pad_token_sequence(interpolated_phone_ids, Config.max_seq_len, ASRConfig.PAD_ID)
-                output_path = os.path.join(output_train_folder, file)
-                torch.save(padded_phone_ids, output_path)
-                # Uncomment the line below to print progress for each file.
-                # print(f"{file}: success")
-            except Exception as e:
-                print(f"Error processing {file}: {e}")
+	# Load transcript metadata.
+	transcript_metadata = load_transcript_metadata(transcript_file)
 
-    # Process test embeddings forced alignment inline:
-    test_embeddings_folder = os.path.join(embeddings_folder, "test")
-    output_test_folder = os.path.join(output_folder, "test")
-    os.makedirs(output_test_folder, exist_ok=True)
-    print("Processing test forced alignment files...")
-    for file in tqdm.tqdm(os.listdir(test_embeddings_folder), desc="Processing forced alignment files"):
-        if file.endswith(".pt"):
-            embedding_path = os.path.join(test_embeddings_folder, file)
-            try:
-                predicted_ids, num_zeros, _ = get_phone_forced_alignment(
-                    embedding_path,
-                    audio_folder,
-                    transcript_metadata,
-                    device,
-                    model,
-                    proc,
-                    target_sr
-                )
-                interpolated_phone_ids = interpolate_alignment(predicted_ids, num_zeros)
-                padded_phone_ids, pad_mask = pad_token_sequence(interpolated_phone_ids, Config.max_seq_len, ASRConfig.PAD_ID)
-                output_path = os.path.join(output_test_folder, file)
-                torch.save(padded_phone_ids, output_path)
-            except Exception as e:
-                print(f"Error processing {file}: {e}")
+	# Process train embeddings forced alignment inline:
+	train_embeddings_folder = os.path.join(embeddings_folder, "train")
+	output_train_folder = os.path.join(output_folder, "train")
+	os.makedirs(output_train_folder, exist_ok=True)
+	print("Processing train forced alignment files...")
+	for file in tqdm.tqdm(os.listdir(train_embeddings_folder), desc="Processing forced alignment files"):
+		if file.endswith(".pt"):
+			embedding_path = os.path.join(train_embeddings_folder, file)
+			try:
+				predicted_ids, num_zeros, _ = get_phone_forced_alignment(
+					embedding_path,
+					audio_folder,
+					transcript_metadata,
+					device,
+					model,
+					proc,
+					target_sr,
+					pipeline  # pass pipeline here
+				)
+				interpolated_phone_ids = interpolate_alignment(predicted_ids, num_zeros)
+				padded_phone_ids, pad_mask = pad_token_sequence(interpolated_phone_ids, Config.max_seq_len, ASRConfig.PAD_ID)
+				output_path = os.path.join(output_train_folder, file)
+				torch.save(padded_phone_ids, output_path)
+			except Exception as e:
+				print(f"Error processing {file}: {e}")
+
+	# Process test embeddings forced alignment inline:
+	test_embeddings_folder = os.path.join(embeddings_folder, "test")
+	output_test_folder = os.path.join(output_folder, "test")
+	os.makedirs(output_test_folder, exist_ok=True)
+	print("Processing test forced alignment files...")
+	for file in tqdm.tqdm(os.listdir(test_embeddings_folder), desc="Processing forced alignment files"):
+		if file.endswith(".pt"):
+			embedding_path = os.path.join(test_embeddings_folder, file)
+			try:
+				predicted_ids, num_zeros, _ = get_phone_forced_alignment(
+					embedding_path,
+					audio_folder,
+					transcript_metadata,
+					device,
+					model,
+					proc,
+					target_sr,
+					pipeline  # pass pipeline here
+				)
+				interpolated_phone_ids = interpolate_alignment(predicted_ids, num_zeros)
+				padded_phone_ids, pad_mask = pad_token_sequence(interpolated_phone_ids, Config.max_seq_len, ASRConfig.PAD_ID)
+				output_path = os.path.join(output_test_folder, file)
+				torch.save(padded_phone_ids, output_path)
+			except Exception as e:
+				print(f"Error processing {file}: {e}")
 
 if __name__ == "__main__":
-    main()
+	main()
