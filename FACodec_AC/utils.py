@@ -15,6 +15,20 @@ import re
 from num2words import num2words
 from phonemizer import phonemize
 from phonemizer.separator import Separator
+from phonemizer.backend.espeak.wrapper import EspeakWrapper
+SCRIPT_LOCATION = os.environ.get("location")
+
+# This is just because delta cannot install espeak properly
+if SCRIPT_LOCATION == "server":
+    # absolute path to the library you compiled
+    lib_path = "/u/yurii/.local/lib/libespeak-ng.so.1"
+    # 1) let phonemizer know
+    EspeakWrapper.set_library(lib_path)          # python-only
+    # 2) make sure the dynamic loader can also find it
+    os.environ["LD_LIBRARY_PATH"] = (
+        os.path.dirname(lib_path) + ":" + os.environ.get("LD_LIBRARY_PATH", "")
+    )
+    os.environ["ESPEAK_DATA_PATH"] = "/u/yurii/.local/share/espeak-ng-data"
 
 
 def pad_token_sequence(seq, target_len, pad_id):
@@ -60,14 +74,14 @@ def pad_token_sequence(seq, target_len, pad_id):
     
     return padded_seq, mask
 
-def interpolate_alignment(predicted_ids, num_zeros):
+def interpolate_alignment(predicted_ids, num_zeros, mode='nearest'):
     """
     Interpolates the predicted_ids (alignment) to match the expected sequence length.
     """
     phone_ids = (
         F.interpolate(predicted_ids.unsqueeze(0).float(),
                       size=num_zeros,
-                      mode="nearest")
+                      mode=mode)
         .long()
         .squeeze(0)
     )
@@ -371,7 +385,7 @@ def get_phone_forced_alignment(embedding_path, audio_folder, transcript_metadata
     )
     # aligned_ids is a tensor of phoneme‐CTC IDs (with repeats & blanks)
 
-    return aligned_ids, num_zeros, frame_scores
+    return aligned_ids, num_zeros, frame_scores, logits
 
 def get_asr_alignment(embedding_path, audio_folder, device, w2v_model, w2v_processor):
     """
