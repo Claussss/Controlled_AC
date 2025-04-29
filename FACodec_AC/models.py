@@ -179,9 +179,10 @@ class DiffusionTransformerModel(nn.Module):
         # Extra dropout for conditioning signals
         self.dropout_cond = nn.Dropout(0.1)
 
-        # encoder & output
+        # encoder & output: update output layer to produce continuous output matching proj_to_256 output shape.
         self.encoder = CustomTransformerEncoder(num_layers, d_model, nhead, d_ff, dropout)
-        self.fc_out = nn.Linear(d_model, vocab_size)
+        feature_dim = self.proj_to_256.out_features
+        self.fc_out = nn.Linear(d_model, feature_dim)
 
         # load std (TODO, later we can normalize inputs instead of applying std to noise directly)
         self.register_buffer("precomputed_std", torch.load(std_file_path))
@@ -218,57 +219,51 @@ class DiffusionTransformerModel(nn.Module):
         # position IDs
         pos_ids = torch.arange(seq_len, device=device).unsqueeze(0)
 
-        # sanitize pad tokens by replacing them with 0, which is valid token in Facodec codebook
-        # After codebook lookup, those vectors will be zeroed out by the padding mask anyway
+        # sanitize pad tokens by replacing them with 0
         x_mod = x.clone()
         if padding_mask is not None:
             x_mod = x_mod.masked_fill(padding_mask, 0)
 
-        # codebook & upsample
+        # codebook & upsample; compute clean target before noise is added.
         code_vecs = self.codebook(x_mod)
-        code_up   = self.proj_to_256(code_vecs)
-        if padding_mask is not None:
-            code_up = code_up.masked_fill(padding_mask.unsqueeze(-1), 0.0)
+        code_up   = self.proj_to_256(code_vecs)    # target continuous representation
 
-        # add noise
+        # add noise on a copy of code_up
+        code_noisy = code_up.clone()
         if noise_scaled is None:
             noise_scaled = torch.zeros_like(code_up)
-        code_noisy = code_up.clone()
         if mask_positions is not None:
             code_noisy[mask_positions] += noise_scaled[mask_positions]
 
         # project to model dim
         token_emb = self.proj_to_d_model(code_noisy)      # [B,T,D]
-        pos_emb   = self.pos_embedding(pos_ids)           # [1,T,D]
+        pos_emb   = self.pos_embedding(pos_ids)             # [1,T,D]
 
-        # --- Early Fusion: Add phone embeddings directly ---
-        # Obtain phone embeddings and apply dropout
+        # Early Fusion: add phone embeddings
         phone_emb = self.phone_embedding(padded_phone_ids)  # [B, T, D]
         phone_emb = self.dropout_cond(phone_emb)
         h = token_emb + pos_emb + phone_emb
 
-        # --- Build FiLM conditioning tensor ---
+        # Build FiLM conditioning tensor
         m = mask_positions.float().unsqueeze(-1) if mask_positions is not None else torch.zeros(bsz, seq_len, 1, device=device)
-        # TODO: test whether FiLM is good for mask_pos
         n = noise_level.unsqueeze(-1).expand(-1, seq_len, -1)
         cond_input = torch.cat([m, n], dim=-1)            # [B,T,2]
-        γβ = self.cond_mlp(cond_input)                    # [B,T,2D]
+        γβ = self.cond_mlp(cond_input)                      # [B,T,2D]
 
-        # Incorporate prosody conditioning if provided:
         if prosody_cond is not None:
-            # prosody_cond: (B, 256, seq_len) -> transpose to (B, seq_len, 256)
-            prosody_in = prosody_cond.transpose(1, 2)
-            # Apply dropout to prosody input
+            prosody_in = prosody_cond.transpose(1, 2)       # (B, seq_len, 256)
             prosody_in = self.dropout_cond(prosody_in)
-            prosody_γβ = self.prosody_proj(prosody_in)         # [B, T, 2D]
+            prosody_γβ = self.prosody_proj(prosody_in)       # [B, T, 2D]
             γβ = γβ + prosody_γβ
 
-        phone_film = self.phone_proj(phone_emb)                # [B, T, 2D]
+        phone_film = self.phone_proj(phone_emb)             # [B, T, 2D]
         γβ = γβ + phone_film
 
-        # Pass through conditional encoder using the combined FiLM parameters:
+        # Pass through transformer encoder using combined FiLM parameters
         h = self.encoder(h, γβ, src_key_padding_mask=padding_mask)
+        reconstruction = self.fc_out(h)
 
-        return self.fc_out(h)
+        # Return both the prediction and the clean target for MSE loss.
+        return reconstruction, code_up
 
 

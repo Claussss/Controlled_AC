@@ -85,8 +85,6 @@ def main():
 
     for epoch in range(Config.epochs):
         total_loss = 0.0
-        correct_train = 0
-        total_masked_train = 0
         num_batches = 0
 
         # --- Training ---
@@ -108,8 +106,8 @@ def main():
             feature_dim = model.proj_to_256.out_features
             noise_scaled = torch.randn(bsz, seq_len, feature_dim, device=x0.device) * (noise_level_value * model.precomputed_std)
 
-            # Forward pass: inject noise at the specified masked positions.
-            logits = model(
+            # Forward pass returns (prediction, target_clean)
+            pred, target = model(
                 x=x0, 
                 padded_phone_ids=padded_phone_ids, 
                 noise_level=noise_level,
@@ -118,46 +116,23 @@ def main():
                 noise_scaled=noise_scaled,
                 prosody_cond=prosody_cond
             )
-            bsz, seq_len, vocab_sz = logits.shape
-            logits_flat = logits.view(-1, vocab_sz)  # [B*T, V]
-            x0_flat = x0.view(-1)                      # [B*T]
-            mask_flat = mask_positions.view(-1).float()
 
-            all_ce = F.cross_entropy(logits_flat, x0_flat, reduction='none')
-
-            masked_sum = (all_ce * mask_flat).sum()
-            num_masked = mask_flat.sum().clamp_min(1.0)
-            masked_loss = masked_sum / num_masked
-
-            unmask_sum = (all_ce * (1.0 - mask_flat)).sum()
-            num_unmasked = ((1.0 - mask_flat).sum()).clamp_min(1.0)
-            unmasked_loss = unmask_sum / num_unmasked
-
-            loss = masked_loss + Config.lambda_unmasked * unmasked_loss
+            # Use MSE loss between prediction and clean target representation
+            loss = F.mse_loss(pred, target)
             loss.backward()
             optimizer.step()
             total_loss += loss.item()
 
-            predicted = logits.argmax(dim=-1)
-            correct = ((predicted == x0) & mask_positions).sum().item()
-            total = mask_positions.sum().item()
-            correct_train += correct
-            total_masked_train += total
-
             num_batches += 1
 
         avg_loss = total_loss / max(num_batches, 1)
-        train_accuracy = correct_train / (total_masked_train + 1e-9)
-        print(f"Epoch {epoch+1}/{Config.epochs}, Loss={avg_loss:.4f}, Train Accuracy={train_accuracy:.4f}")
+        print(f"Epoch {epoch+1}/{Config.epochs}, Loss={avg_loss:.4f}")
         writer.add_scalar("Loss/Train", avg_loss, epoch+1)
-        writer.add_scalar("Accuracy/Train", train_accuracy, epoch+1)
 
         # --- Evaluation ---
         if (epoch+1) % Config.eval_epochs == 0:
             model.eval()
             total_test_loss = 0.0
-            correct_eval = 0
-            total_masked_eval = 0
             test_batches = 0
             with torch.no_grad():
                 for test_batch, padding_mask, test_phone_ids, prosody_cond_test in dataloader_test:
@@ -176,7 +151,7 @@ def main():
                     feat_dim = model.proj_to_256.out_features
                     noise_scaled = torch.randn(bsz, seq_len, feat_dim, device=Config.device) * (noise_val * model.precomputed_std)
 
-                    logits = model(
+                    pred, target = model(
                         x=x0, 
                         padded_phone_ids=padded_phone_ids, 
                         noise_level=noise_level,
@@ -185,32 +160,16 @@ def main():
                         noise_scaled=noise_scaled,
                         prosody_cond=prosody_cond
                     )
-                    V = logits.size(-1)
-                    logits_flat = logits.view(-1, V)
-                    x0_flat = x0.view(-1)
-                    mask_flat = mask_positions.view(-1).float()
-                    ce_flat = F.cross_entropy(logits_flat, x0_flat, reduction='none')
-
-                    masked_loss = (ce_flat * mask_flat).sum() / (mask_flat.sum().clamp_min(1.0))
-                    unmask_loss = (ce_flat * (1 - mask_flat)).sum() / ((1 - mask_flat).sum().clamp_min(1.0))
-                    loss_test = masked_loss + Config.lambda_unmasked * unmask_loss
-
+                    # Compute MSE loss on the continuous predictions.
+                    loss_test = F.mse_loss(pred, target)
                     total_test_loss += loss_test.item()
 
-                    predicted_test = logits.argmax(dim=-1)
-                    correct_batch = ((predicted_test == x0) & mask_positions).sum().item()
-                    total_batch = mask_positions.sum().item()
-                    correct_eval += correct_batch
-                    total_masked_eval += total_batch
-
                     test_batches += 1
-            
+
             avg_test_loss = total_test_loss / max(test_batches, 1)
-            test_accuracy = correct_eval / (total_masked_eval + 1e-9)
-            print(f"Epoch {epoch+1}/{Config.epochs}, Eval Test Loss={avg_test_loss:.4f}, Eval Accuracy={test_accuracy:.4f}")
+            print(f"Epoch {epoch+1}/{Config.epochs}, Eval Loss={avg_test_loss:.4f}")
             writer.add_scalar("Loss/Eval", avg_test_loss, epoch+1)
-            writer.add_scalar("Accuracy/Eval", test_accuracy, epoch+1)
-            
+
             # Save checkpoint if evaluation loss improves
             if avg_test_loss < best_eval_loss:
                 checkpoint_full_path = Config.checkpoint_path
