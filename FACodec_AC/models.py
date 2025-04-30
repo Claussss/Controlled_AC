@@ -188,7 +188,7 @@ class DiffusionTransformerModel(nn.Module):
         self.register_buffer("precomputed_std", torch.load(std_file_path))
 
     def forward(self,
-                x: torch.LongTensor,
+                x: torch.Tensor,  # changed annotation to allow both Long and Float tensors
                 padded_phone_ids: torch.LongTensor,
                 noise_level: torch.FloatTensor,
                 mask_positions: torch.BoolTensor = None,
@@ -196,44 +196,28 @@ class DiffusionTransformerModel(nn.Module):
                 noise_scaled: torch.Tensor = None,
                 prosody_cond: torch.Tensor = None  
     ) -> torch.Tensor:
-        """
-        Parameters:
-            x (torch.LongTensor):
-                Input sequence of token indices.
-            padded_phone_ids (torch.LongTensor):
-                Sequence of phone ids for conditioning, which are embedded and added to the token representations.
-            noise_level (torch.FloatTensor):
-                Global noise level indicators, which are incorporated into the FiLM conditioning.
-            mask_positions (torch.BoolTensor, optional):
-                Boolean mask indicating the positions in the input to which noise should be applied.
-            padding_mask (torch.BoolTensor, optional):
-                Mask indicating padded positions in the input sequence.
-            noise_scaled (torch.Tensor, optional):
-                Noise tensor scaled by the precomputed standard deviation, applied at masked positions.
-            prosody_cond (torch.Tensor, optional):
-                Additional prosody conditioning information provided per time step.
-        """
-        bsz, seq_len = x.size()
+        bsz, seq_len = x.size() if x.dim() == 2 else (x.shape[0], x.shape[1])
         device = x.device
 
         # position IDs
         pos_ids = torch.arange(seq_len, device=device).unsqueeze(0)
 
-        # sanitize pad tokens by replacing them with 0
-        x_mod = x.clone()
-        if padding_mask is not None:
-            x_mod = x_mod.masked_fill(padding_mask, 0)
-
-        # codebook & upsample; compute clean target before noise is added.
-        code_vecs = self.codebook(x_mod)
-        code_up   = self.proj_to_256(code_vecs)    # target continuous representation
+        # If x is provided as indexes, perform codebook lookup; otherwise assume x already holds continuous vectors.
+        if x.dtype == torch.long:
+            x_mod = x.clone()
+            if padding_mask is not None:
+                x_mod = x_mod.masked_fill(padding_mask, 0)
+            code_vecs = self.codebook(x_mod)
+            code_up   = self.proj_to_256(code_vecs)  # continuous representation from lookup
+        else:
+            code_up = x  # use the provided continuous vectors directly
 
         # add noise on a copy of code_up
         code_noisy = code_up.clone()
         if noise_scaled is None:
             noise_scaled = torch.zeros_like(code_up)
         if mask_positions is not None:
-            code_noisy[mask_positions] += noise_scaled[mask_positions]
+            code_noisy[mask_positions] += noise_scaled[mask_positions] # TODO: +=
 
         # project to model dim
         token_emb = self.proj_to_d_model(code_noisy)      # [B,T,D]
