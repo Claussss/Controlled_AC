@@ -8,7 +8,6 @@ from torch.utils.tensorboard import SummaryWriter
 from FACodec_AC.dataset import CodebookSequenceDataset
 from FACodec_AC.models import DiffusionTransformerModel
 from FACodec_AC.config import Config
-from FACodec_AC.utils import get_mask_positions
 from huggingface_hub import hf_hub_download
 import sys
 

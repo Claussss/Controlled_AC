@@ -6,8 +6,6 @@ import torch.nn as nn
 import torch.nn.functional as F
 import torch.optim as optim
 from FACodec_AC.config import Config, ASRConfig
-from FACodec_AC.utils import get_mask_positions
-from torch.utils.tensorboard import SummaryWriter
 
 
 class ConvFeedForward(nn.Module):
