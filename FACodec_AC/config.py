@@ -44,8 +44,6 @@ if SCRIPT_LOCATION == "server":
 
     class ASRConfig:
         metadata_path = "/u/yurii/Projects/datasets/LJSpeech-1.1/metadata.csv"
-        #PAD_ID = 29
-        #VOCAB_SIZE = 29 # For grapheme-based ASR
         PAD_ID = 392
         VOCAB_SIZE = 392
 else:
@@ -71,7 +69,7 @@ else:
 
         batch_size = 4
         epochs = 100
-        eval_epochs = 10
+        eval_epochs = 1
         checkpoint_epochs = 10
         lr = 1e-4
         device = 'cuda'
@@ -91,7 +89,5 @@ else:
 
     class ASRConfig:
         metadata_path = "/home/yurii/Projects/AC/ljspeech/LJSpeech-1.1/metadata.csv"
-        #PAD_ID = 29
-        #VOCAB_SIZE = 29 # For grapheme-based ASR
         PAD_ID = 392
         VOCAB_SIZE = 392
