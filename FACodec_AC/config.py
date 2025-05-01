@@ -6,7 +6,10 @@ if SCRIPT_LOCATION == "server":
     class Config:
         exp_num = os.getenv('EXP_NUM', 0)  # This is specified in my slurm script
         # Data and training parameters
-        zc1_data_dir = '/u/yurii/Projects/datasets/LJSpeech-1.1/facodec_dataset'
+        wav_dir = '/u/yurii/Projects/datasets/LJSpeech-1.1/wavs'
+        facodec_dataset_dir = '/u/yurii/Projects/datasets/LJSpeech-1.1/facodec_dataset'
+        std_content_path = os.path.join(facodec_dataset_dir, 'stats', 'std_content.pt')
+        std_prosody_path = os.path.join(facodec_dataset_dir, 'stats', 'std_prosody.pt') 
         phoneme_cond_dir = '/u/yurii/Projects/datasets/LJSpeech-1.1/phone_dataset'
         checkpoint_path = f'/u/yurii/Projects/Controlled_AC/checkpoints/model_exp_{exp_num}.pt'
         tensorboard_dir = f'/u/yurii/Projects/Controlled_AC/tensorboard/exp_{exp_num}'
@@ -50,9 +53,11 @@ else:
     class Config:
 
         exp_num = 777 # Default experiment name
-
-        zc1_data_dir = '/home/yurii/Projects/AC/ljspeech/zc1_dataset'
-        phoneme_cond_dir = '/home/yurii/Projects/AC/ljspeech/wav2vec_dataset_forced'
+        wav_dir = '/home/yurii/Projects/AC/ljspeech/LJSpeech-1.1/wavs'
+        facodec_dataset_dir = '/home/yurii/Projects/AC/ljspeech/facodec_dataset'
+        std_content_path = os.path.join(facodec_dataset_dir, 'stats', 'std_content.pt')
+        std_prosody_path = os.path.join(facodec_dataset_dir, 'stats', 'std_prosody.pt') 
+        phoneme_cond_dir = '/home/yurii/Projects/AC/ljspeech/phone_dataset'
         checkpoint_path = f'./checkpoints/model_exp_{exp_num}.pt'
         tensorboard_dir = f'./tensorboard/exp_{exp_num}'
         
@@ -61,7 +66,7 @@ else:
                     # to drop in a contiguous segment when not dropping the entire sequence.
         p_drop = 0.1 # With probability p_drop, the entire sequence is masked.
         NOISE_MIN = 1.0
-        NOISE_MAX = 3.5 # How much noise will be added to the input(soft masking)
+        NOISE_MAX = 20 # How much noise will be added to the input(soft masking)
         lambda_unmasked = 0.01 # small weight on the unmasked penalty
 
         batch_size = 4

@@ -27,18 +27,12 @@ def main():
     model.eval()
     target_sr = fe.sampling_rate  # typically 16000
 
-    # Define directories (update paths as needed)
-    if SCRIPT_LOCATION == "server":
-        audio_folder = "/u/yurii/Projects/datasets/LJSpeech-1.1/wavs"
-        embeddings_folder = "/u/yurii/Projects/datasets/LJSpeech-1.1/phone_dataset"
-        output_folder = "/u/yurii/Projects/datasets/LJSpeech-1.1/wav2vec_dataset_forced_phoneme"
-        transcript_file = "/u/yurii/Projects/datasets/LJSpeech-1.1/metadata.csv"
-    else:
-        # Define directories (update paths as needed)
-        audio_folder = "/home/yurii/Projects/AC/ljspeech/LJSpeech-1.1/wavs"
-        embeddings_folder = "/home/yurii/Projects/AC/ljspeech/facodec_dataset"  # Contains train and test subdirectories
-        output_folder = "/home/yurii/Projects/AC/ljspeech/phone_dataset"
-        transcript_file = "/home/yurii/Projects/AC/ljspeech/LJSpeech-1.1/metadata.csv"  # Updated to metadata.csv
+
+    audio_folder = Config.wav_dir
+    embeddings_folder = Config.facodec_dataset_dir
+    output_folder = Config.phoneme_cond_dir
+    transcript_file = ASRConfig.metadata_path
+
 
     # Load transcript metadata.
     transcript_metadata = load_transcript_metadata(transcript_file)

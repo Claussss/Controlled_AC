@@ -107,7 +107,7 @@ def process_wav_facodec(filepath, fa_encoder, fa_decoder, out_dir, device):
             device (torch.device or str): The device on which the processing will be performed.
 
     Returns:
-            tuple: A tuple containing the input filepath and a status string ("success" if processing and saving completed successfully; otherwise, an error message indicating the failure reason).
+            tuple: A tuple containing the input filepath, a status string ("success" if processing and saving completed successfully; otherwise, an error message indicating the failure reason), and the standard deviations of content and prosody vectors.
     """
     try:
         wav_waveform, wav_sr = torchaudio.load(filepath)
@@ -118,13 +118,26 @@ def process_wav_facodec(filepath, fa_encoder, fa_decoder, out_dir, device):
         with torch.no_grad():
             h_input = fa_encoder(wav_waveform[None, :, :])
             _, vq_id, _, quantized_arr, _ = fa_decoder(h_input, eval_vq=False, vq=True)
-        tokens, mask = pad_token_sequence(vq_id[1], Config.max_seq_len, Config.PAD_ID)
-        tokens_zc2, _ = pad_token_sequence(vq_id[2], Config.max_seq_len, Config.PAD_ID)
+        _, mask = pad_token_sequence(vq_id[1], Config.max_seq_len, Config.PAD_ID)
+        content_vector, _ = pad_token_sequence(quantized_arr[1], Config.max_seq_len, Config.PAD_ID)
         prosody_vector, _ = pad_token_sequence(quantized_arr[0], Config.max_seq_len, Config.PAD_ID)
         acoustic_vector, _ = pad_token_sequence(quantized_arr[2], Config.max_seq_len, Config.PAD_ID)
         base = os.path.splitext(os.path.basename(filepath))[0]
-        torch.save({'tokens': tokens, 'mask': mask, 'tokens_zc2': tokens_zc2, 'prosody':prosody_vector, 'acoustic':acoustic_vector}, os.path.join(out_dir, f"{base}.pt"))
-        return filepath, "success"
+        torch.save({'content': content_vector, 'mask': mask, 'prosody': prosody_vector, 'acoustic': acoustic_vector},
+                   os.path.join(out_dir, f"{base}.pt"))
+        # Compute standard deviations (for reporting only)
+        std_content = torch.std(content_vector.float())
+        std_prosody = torch.std(prosody_vector.float())
+        # Compute running aggregates for dynamic global stat computation
+        sum_content   = content_vector.float().sum()
+        sumsq_content = (content_vector.float() ** 2).sum()
+        count_content = content_vector.numel()
+        sum_prosody   = prosody_vector.float().sum()
+        sumsq_prosody = (prosody_vector.float() ** 2).sum()
+        count_prosody = prosody_vector.numel()
+        return (filepath, "success", std_content, std_prosody,
+                sum_content, sumsq_content, count_content,
+                sum_prosody, sumsq_prosody, count_prosody)
     except Exception as e:
         return filepath, f"error: {str(e)}"
 

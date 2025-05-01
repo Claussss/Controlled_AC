@@ -46,10 +46,6 @@ class CondLayerNorm(nn.Module):
     def __init__(self, d_model: int):
         super().__init__()
         self.norm = nn.LayerNorm(d_model, elementwise_affine=False)
-        # projections to generate gamma and beta from cond input
-        # TODO: remove it; (now the trained weights use it) 
-        self.gamma_proj = nn.Linear(d_model, d_model)
-        self.beta_proj  = nn.Linear(d_model, d_model)
 
     def forward(self, x: torch.Tensor, cond: torch.Tensor) -> torch.Tensor:
         """
@@ -138,10 +134,7 @@ class DiffusionTransformerModel(nn.Module):
     """
     def __init__(
         self,
-        pretrained_codebook: nn.Embedding,
-        pretrained_proj_layer: nn.Module,
         std_file_path: str,
-        vocab_size: int = Config.VOCAB_SIZE,
         d_model: int = 1024,
         nhead: int = 8,
         num_layers: int = 12,
@@ -152,25 +145,20 @@ class DiffusionTransformerModel(nn.Module):
         super().__init__()
         self.d_model = d_model
 
-        # frozen codebook & projection
-        self.codebook = nn.Embedding.from_pretrained(pretrained_codebook.weight.clone(), freeze=True)
-        self.proj_to_256 = pretrained_proj_layer
-        for p in self.proj_to_256.parameters(): p.requires_grad = False
-        self.proj_to_d_model = nn.Linear(self.proj_to_256.out_features, d_model)
+        # Input feature dim is fixed as 256 (removed self.proj_to_256)
+        self.proj_to_d_model = nn.Linear(256, d_model)
 
         # positional embeddings
         self.pos_embedding = nn.Embedding(max_seq_len, d_model)
 
-        # conditional FiLM MLP: input [mask_bit, noise_level]
+        # conditional FiLM MLP: input [mask_bit, noise_level] (old branch, unused now)
         self.cond_mlp = nn.Sequential(
             nn.Linear(2, d_model * 2),
             nn.ReLU(),
         )
 
-        # prosody conditioning projection: prosody_cond is (B, 256, seq_len)
+        # prosody conditioning projection
         self.prosody_proj = nn.Linear(256, d_model * 2)
-        # TODO: remove later, not needed. (now the trained weights use it)
-        self.acoustic_proj = nn.Linear(256, d_model * 2)
 
         # phone conditioning
         self.phone_embedding = nn.Embedding(ASRConfig.VOCAB_SIZE + 1, d_model)
@@ -179,75 +167,53 @@ class DiffusionTransformerModel(nn.Module):
         # Extra dropout for conditioning signals
         self.dropout_cond = nn.Dropout(0.1)
 
-        # encoder & output: update output layer to produce continuous output matching proj_to_256 output shape.
+        # encoder & output; output feature dim is now 256
         self.encoder = CustomTransformerEncoder(num_layers, d_model, nhead, d_ff, dropout)
-        feature_dim = self.proj_to_256.out_features
+        feature_dim = 256
         self.fc_out = nn.Linear(d_model, feature_dim)
 
-        # load std (TODO, later we can normalize inputs instead of applying std to noise directly)
+        # NEW: Add noise_proj to process noise_scaled as conditioning input
+        self.noise_proj = nn.Linear(feature_dim, d_model * 2)
+
+        # load std
         self.register_buffer("precomputed_std", torch.load(std_file_path))
 
     def forward(self,
-                x: torch.Tensor,  # changed annotation to allow both Long and Float tensors
+                x: torch.Tensor,  # x is always continuous with dim 256
                 padded_phone_ids: torch.LongTensor,
-                noise_level: torch.FloatTensor,
-                mask_positions: torch.BoolTensor = None,
+                noise_scaled: torch.Tensor,
                 padding_mask: torch.BoolTensor = None,
-                noise_scaled: torch.Tensor = None,
                 prosody_cond: torch.Tensor = None  
     ) -> torch.Tensor:
+        x = x.transpose(1, 2)
         bsz, seq_len = x.size() if x.dim() == 2 else (x.shape[0], x.shape[1])
         device = x.device
-
+        
         # position IDs
         pos_ids = torch.arange(seq_len, device=device).unsqueeze(0)
-
-        # If x is provided as indexes, perform codebook lookup; otherwise assume x already holds continuous vectors.
-        if x.dtype == torch.long:
-            x_mod = x.clone()
-            if padding_mask is not None:
-                x_mod = x_mod.masked_fill(padding_mask, 0)
-            code_vecs = self.codebook(x_mod)
-            code_up   = self.proj_to_256(code_vecs)  # continuous representation from lookup
-        else:
-            code_up = x  # use the provided continuous vectors directly
-
-        # add noise on a copy of code_up
-        code_noisy = code_up.clone()
-        if noise_scaled is None:
-            noise_scaled = torch.zeros_like(code_up)
-        if mask_positions is not None:
-            code_noisy[mask_positions] += noise_scaled[mask_positions] # TODO: +=
-
-        # project to model dim
-        token_emb = self.proj_to_d_model(code_noisy)      # [B,T,D]
-        pos_emb   = self.pos_embedding(pos_ids)             # [1,T,D]
-
-        # Early Fusion: add phone embeddings
-        phone_emb = self.phone_embedding(padded_phone_ids)  # [B, T, D]
+        
+        # Use continuous input x directly (dim=256)
+        code_up = x
+        
+        # Project to model dimension and add positional & phone embeddings
+        token_emb = self.proj_to_d_model(code_up)      # [B, T, D]
+        pos_emb   = self.pos_embedding(pos_ids)         # [1, T, D]
+        phone_emb = self.phone_embedding(padded_phone_ids)
         phone_emb = self.dropout_cond(phone_emb)
         h = token_emb + pos_emb + phone_emb
-
-        # Build FiLM conditioning tensor
-        m = mask_positions.float().unsqueeze(-1) if mask_positions is not None else torch.zeros(bsz, seq_len, 1, device=device)
-        n = noise_level.unsqueeze(-1).expand(-1, seq_len, -1)
-        cond_input = torch.cat([m, n], dim=-1)            # [B,T,2]
-        γβ = self.cond_mlp(cond_input)                      # [B,T,2D]
-
+        
+        # Build conditioning using noise_scaled and phone/prosody cues, with dropout applied
+        noise_cond = self.dropout_cond(self.noise_proj(noise_scaled))  # [B, T, 2*d_model]
+        phone_cond = self.dropout_cond(self.phone_proj(phone_emb))       # [B, T, 2*d_model]
+        cond = noise_cond + phone_cond
         if prosody_cond is not None:
-            prosody_in = prosody_cond.transpose(1, 2)       # (B, seq_len, 256)
-            prosody_in = self.dropout_cond(prosody_in)
-            prosody_γβ = self.prosody_proj(prosody_in)       # [B, T, 2D]
-            γβ = γβ + prosody_γβ
-
-        phone_film = self.phone_proj(phone_emb)             # [B, T, 2D]
-        γβ = γβ + phone_film
-
-        # Pass through transformer encoder using combined FiLM parameters
-        h = self.encoder(h, γβ, src_key_padding_mask=padding_mask)
+            prosody_repr = self.dropout_cond(self.prosody_proj(prosody_cond.transpose(1, 2)))
+            cond += prosody_repr
+        
+        # Forward through encoder
+        h = self.encoder(h, cond, src_key_padding_mask=padding_mask)
         reconstruction = self.fc_out(h)
-
-        # Return both the prediction and the clean target for MSE loss.
-        return reconstruction, code_up
+        
+        return reconstruction
 
 

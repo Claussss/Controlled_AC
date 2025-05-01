@@ -7,9 +7,10 @@ from huggingface_hub import hf_hub_download
 import torch
 import torchaudio
 import tqdm
+from FACodec_AC.config import Config
 
 # Device configuration
-device = 'cuda' if torch.cuda.is_available() else 'cpu'
+device = Config.device
 
 import sys
 sys.path.append(os.path.join(os.path.dirname(__file__), '..', 'Amphion'))
@@ -59,10 +60,8 @@ random.seed(42)
 train_files, test_files = train_test_split(all_wavs, test_size=0.1, random_state=42)
 print(f"Train files: {len(train_files)}, Test files: {len(test_files)}")
 
-if SCRIPT_LOCATION == "server":
-    output_dir = '/u/yurii/Projects/datasets/LJSpeech-1.1/facodec_dataset'
-else:
-    output_dir = '/home/yurii/Projects/AC/ljspeech/facodec_dataset'
+
+output_dir = Config.facodec_dataset_dir
 
 train_out = os.path.join(output_dir, 'train')
 test_out = os.path.join(output_dir, 'test')
@@ -70,16 +69,47 @@ os.makedirs(train_out, exist_ok=True)
 os.makedirs(test_out, exist_ok=True)
 
 if __name__ == "__main__":
-    print("Processing train set...")
-    train_results = []
-    for f in tqdm.tqdm(train_files, desc="Processing train files"):
-        fp, status = process_wav_facodec(f, fa_encoder, fa_decoder, train_out, device)
-        print(f"{fp}: {status}")
-        train_results.append((fp, status))
+    # Initialize accumulators for content and prosody
+    global_sum_content = 0.0
+    global_sumsq_content = 0.0
+    global_count_content = 0
+    global_sum_prosody = 0.0
+    global_sumsq_prosody = 0.0
+    global_count_prosody = 0
 
-    print("Processing test set...")
-    test_results = []
-    for f in tqdm.tqdm(test_files, desc="Processing test files"):
-        fp, status = process_wav_facodec(f, fa_encoder, fa_decoder, test_out, device)
-        print(f"{fp}: {status}")
-        test_results.append((fp, status))
+    try:
+        print("Processing train set...")
+        for f in tqdm.tqdm(train_files, desc="Processing train files"):
+            (fp, status, std_content, std_prosody,
+             sum_content, sumsq_content, count_content,
+             sum_prosody, sumsq_prosody, count_prosody) = process_wav_facodec(f, fa_encoder, fa_decoder, train_out, device)
+            print(f"{fp}: {status}")
+            if "success" in status:
+                global_sum_content   += sum_content
+                global_sumsq_content += sumsq_content
+                global_count_content += count_content
+                global_sum_prosody   += sum_prosody
+                global_sumsq_prosody += sumsq_prosody
+                global_count_prosody += count_prosody
+
+        print("Processing test set...")
+        for f in tqdm.tqdm(test_files, desc="Processing test files"):
+            fp, status, _, _, _, _, _, _, _, _ = process_wav_facodec(f, fa_encoder, fa_decoder, test_out, device)
+            print(f"{fp}: {status}")
+    except KeyboardInterrupt:
+        print("Interrupted by user. Computing stats with data processed so far...")
+    finally:
+        # Compute global standard deviations dynamically
+        if global_count_content > 1 and global_count_prosody > 1:
+            var_content = (global_sumsq_content - (global_sum_content ** 2) / global_count_content) / (global_count_content - 1)
+            var_prosody = (global_sumsq_prosody - (global_sum_prosody ** 2) / global_count_prosody) / (global_count_prosody - 1)
+            global_std_content = var_content.sqrt()
+            global_std_prosody = var_prosody.sqrt()
+            # Save stats in a new sub-directory "stats"
+            stats_dir = os.path.join(output_dir, "stats")
+            os.makedirs(stats_dir, exist_ok=True)
+            torch.save(global_std_content, os.path.join(stats_dir, "std_content.pt"))
+            torch.save(global_std_prosody, os.path.join(stats_dir, "std_prosody.pt"))
+            print(f"Saved global std stats to {stats_dir}")
+        else:
+            print("Insufficient data to compute global stats.")
