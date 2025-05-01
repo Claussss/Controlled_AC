@@ -59,7 +59,7 @@ def main():
         # --- Training ---
         for batch, padding_mask, padded_phone_ids, prosody_cond in dataloader_train:
             optimizer.zero_grad()
-            x0 = batch.to(Config.device)  # clean continuous input, shape: [B, T, 256]
+            x0 = batch.to(Config.device)  # clean continuous input, shape: [B, 256, T]
             padding_mask = padding_mask.to(Config.device)
             padded_phone_ids = padded_phone_ids.to(Config.device)
             prosody_cond = prosody_cond.to(Config.device)
@@ -88,8 +88,8 @@ def main():
             )
 
             # Target remains the clean input x0
-            target = x0.reshape(bsz, seq_len, feature_dim)
-            loss = F.mse_loss(pred, target)
+            target = x0
+            loss = F.mse_loss(pred.transpose(1,2), target)
             loss.backward()
             optimizer.step()
             total_loss += loss.item()
