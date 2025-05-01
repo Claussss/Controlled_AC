@@ -125,8 +125,8 @@ def main():
                         padding_mask=padding_mask,
                         prosody_cond=prosody_cond
                     )
-                    target = x0.reshape(bsz, seq_len, feature_dim)
-                    loss_test = F.mse_loss(pred, target)
+                    target = x0
+                    loss_test = F.mse_loss(pred.transpose(1,2), target)
                     total_test_loss += loss_test.item()
                     test_batches += 1
 
