@@ -6,8 +6,7 @@ This repository provides the code for preparing datasets and training a non-auto
 
 - **create_facodec_dataset.py**  
   Processes WAV files from an input folder (specified inside the script) and generates a `.pt` file for each WAV. Each file contains a dictionary with the following keys:
-  - `tokens`: zc1 codebook indices, padded with `Config.PAD_ID` up to `Config.max_seq_len`.
-  - `tokens_zc2`: zc2 codebook indices, padded similarly.
+  - `content`: codebook vectors for the content dimension, padded with zero vectors.
   - `prosody`: codebook vectors for the prosody dimension, padded with zero vectors.
   - `acoustic`: codebook vectors for acoustic details, padded with zero vectors.
   - `mask`: a binary mask with ones at the padding token indexes.
@@ -15,14 +14,9 @@ This repository provides the code for preparing datasets and training a non-auto
 - **create_phone_dataset.py**  
   Processes WAV files (and their corresponding transcript) to create forced alignment data that the model will use for conditioning. Here, the ASR model used is `wav2vec2-xlsr-53-espeak-cv-ft`, which produces phone outputs (IPA), so the ASR vocabulary size is 392.  
 
-- **create_ASR_dataset.py**
- Leverages the same ASR model as create_phone_dataset.py but directly uses its predicted output for conditioning, bypassing transcript retrieval and forced alignment.
-
-- **create_grapheme_dataset.py**  
-  Similar to `create_phone_dataset.py` but uses an ASR model that produces graphemes in English (with a vocabulary size of 32).
 
 - **train.py**  
-  Trains the diffusion transformer model using the dataset created by `create_facodec_dataset.py` and conditions it on phone/grapheme/ASR outputs (the best results have been obtained using the phone dataset). The training loop is integrated directly in this file.
+  Trains the diffusion transformer model using the dataset created by `create_facodec_dataset.py` and conditions it on phone outputs (the best results have been obtained using the phone dataset). The training loop is integrated directly in this file.
 
 - **FACodec_AC/config.py**  
   Contains the main configuration settings including paths, training parameters, model hyperparameters, and data constants. Adjust these as needed for your dataset location and training preferences.
@@ -63,19 +57,18 @@ This repository provides the code for preparing datasets and training a non-auto
    ```
 
 2. **Generate FACodec Dataset**  
-   Edit the input and output directories in `create_facodec_dataset.py` as needed and run:
+   Edit the input and output directories in `config.py` as needed and run:
    ```
    python create_facodec_dataset.py
    ```
    Each WAV file will produce a `.pt` file containing a dictionary with:
-   - `tokens`
-   - `tokens_zc2`
+   - `content`
    - `prosody`
    - `acoustic`
    - `mask`
 
-3. **Generate Phone/Forced Alignment Data**  
-   For phoneme conditioning, open `create_phone_dataset.py` and adjust the paths or passes as needed. Then run:
+3. **Generate Phone Forced Alignment Data**  
+   For phoneme conditioning, open `config.py` and adjust the paths or passes as needed. Then run:
    ```
    python create_phone_dataset.py
    ```
@@ -85,7 +78,7 @@ This repository provides the code for preparing datasets and training a non-auto
 ## Training the Model
 
 1. **Update Configurations**  
-   Open `FACodec_AC/config.py` to update paths (such as `zc1_data_dir`, `phoneme_cond_dir`, and `checkpoint_path`) and training hyperparameters (e.g., `epochs`, `batch_size`, etc.) to suit your environment.
+   Open `FACodec_AC/config.py` to update paths (such as `facodec_dataset_dir`, `phoneme_cond_dir`, and `checkpoint_path`) and training hyperparameters (e.g., `epochs`, `batch_size`, etc.) to suit your environment.
 
 2. **Run the Training Script**  
    Once the dataset has been created and the configuration updated, run:
