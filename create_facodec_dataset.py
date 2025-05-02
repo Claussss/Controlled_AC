@@ -60,9 +60,7 @@ random.seed(42)
 train_files, test_files = train_test_split(all_wavs, test_size=0.1, random_state=42)
 print(f"Train files: {len(train_files)}, Test files: {len(test_files)}")
 
-
 output_dir = Config.facodec_dataset_dir
-
 train_out = os.path.join(output_dir, 'train')
 test_out = os.path.join(output_dir, 'test')
 os.makedirs(train_out, exist_ok=True)
@@ -77,9 +75,9 @@ if __name__ == "__main__":
     global_sumsq_prosody = 0.0
     global_count_prosody = 0
 
-    try:
-        print("Processing train set...")
-        for f in tqdm.tqdm(train_files, desc="Processing train files"):
+    print("Processing train set...")
+    for f in tqdm.tqdm(train_files, desc="Processing train files"):
+        try:
             (fp, status, std_content, std_prosody,
              sum_content, sumsq_content, count_content,
              sum_prosody, sumsq_prosody, count_prosody) = process_wav_facodec(f, fa_encoder, fa_decoder, train_out, device)
@@ -91,14 +89,18 @@ if __name__ == "__main__":
                 global_sum_prosody   += sum_prosody
                 global_sumsq_prosody += sumsq_prosody
                 global_count_prosody += count_prosody
+        except Exception as e:
+            print(f"Error processing {f}: {e}")
 
-        print("Processing test set...")
-        for f in tqdm.tqdm(test_files, desc="Processing test files"):
+    print("Processing test set...")
+    for f in tqdm.tqdm(test_files, desc="Processing test files"):
+        try:
             fp, status, _, _, _, _, _, _, _, _ = process_wav_facodec(f, fa_encoder, fa_decoder, test_out, device)
             print(f"{fp}: {status}")
-    except KeyboardInterrupt:
-        print("Interrupted by user. Computing stats with data processed so far...")
-    finally:
+        except Exception as e:
+            print(f"Error processing {f}: {e}")
+
+    try:
         # Compute global standard deviations dynamically
         if global_count_content > 1 and global_count_prosody > 1:
             var_content = (global_sumsq_content - (global_sum_content ** 2) / global_count_content) / (global_count_content - 1)
@@ -113,3 +115,5 @@ if __name__ == "__main__":
             print(f"Saved global std stats to {stats_dir}")
         else:
             print("Insufficient data to compute global stats.")
+    except KeyboardInterrupt:
+        print("Interrupted by user. Computing stats with data processed so far...")
