@@ -131,7 +131,9 @@ def process_wav_facodec(filepath, fa_encoder, fa_decoder, out_dir, device):
             h_input = fa_encoder(wav_waveform[None, :, :])
             _, vq_id, _, quantized_arr, _ = fa_decoder(h_input, eval_vq=False, vq=True)
         _, mask = pad_token_sequence(vq_id[1], Config.max_seq_len, Config.PAD_ID)
-        content_vector, _ = pad_token_sequence(quantized_arr[1], Config.max_seq_len, Config.PAD_ID)
+        #content_vector, _ = pad_token_sequence(quantized_arr[1], Config.max_seq_len, Config.PAD_ID)
+        content_vector = get_zc1_from_indx(vq_id[1], torch.zeros(vq_id[1].shape[1], dtype=torch.long), fa_decoder)
+        content_vector = pad_token_sequence(content_vector, Config.max_seq_len, Config.PAD_ID)[0]
         prosody_vector, _ = pad_token_sequence(quantized_arr[0], Config.max_seq_len, Config.PAD_ID)
         acoustic_vector, _ = pad_token_sequence(quantized_arr[2], Config.max_seq_len, Config.PAD_ID)
         base = os.path.splitext(os.path.basename(filepath))[0]
@@ -219,3 +221,25 @@ def get_phone_forced_alignment(embedding_path, audio_folder, transcript_metadata
 		return aligned_ids, num_zeros, frame_scores,
 	else:
 		return aligned_ids, num_zeros, frame_scores, logits
+
+def get_zc1_from_indx(tokens, mask, fa_decoder):
+    """
+    Convert token indexes to continuous zc1 representations.
+    
+    tokens: LongTensor of shape [B, T] (pad token = 1025)
+    mask: BooleanTensor of shape [B, T] where True indicates padding.
+    
+    Replaces pad tokens with 0, embeds tokens via the codebook and projection,
+    then zeros out the padded positions.
+    """
+    tokens_mod = tokens.clone()
+    tokens_mod[mask] = 0
+    with torch.no_grad():
+        # Get codebook from the FACodec decoder.
+        codebook = fa_decoder.quantizer[1].layers[0].codebook.weight  # [num_codes, code_dim]
+        e_q = torch.nn.functional.embedding(tokens_mod, codebook)     # [B, T, code_dim]
+        z_c1 = fa_decoder.quantizer[1].layers[0].out_proj(e_q)          # [B, T, 256]
+    pad_mask = mask.unsqueeze(-1).expand_as(z_c1)
+    z_c1[pad_mask] = 0
+    z_c1 = rearrange(z_c1, "b t d -> b d t")
+    return z_c1
