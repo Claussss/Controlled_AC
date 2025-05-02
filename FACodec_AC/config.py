@@ -53,7 +53,7 @@ else:
         exp_num = 777 # Default experiment name
         wav_dir = '/home/yurii/Projects/AC/ljspeech/LJSpeech-1.1/wavs'
         facodec_dataset_dir = '/home/yurii/Projects/AC/ljspeech/facodec_dataset'
-        std_content_path = os.path.join(facodec_dataset_dir, 'stats', 'std_content.pt')
+        std_content_path = '/home/yurii/Projects/AC/ljspeech/zc1_dataset/stats/std.pt'#os.path.join(facodec_dataset_dir, 'stats', 'std_content.pt')
         std_prosody_path = os.path.join(facodec_dataset_dir, 'stats', 'std_prosody.pt') 
         phoneme_cond_dir = '/home/yurii/Projects/AC/ljspeech/phone_dataset'
         checkpoint_path = f'./checkpoints/model_exp_{exp_num}.pt'

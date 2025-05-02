@@ -74,7 +74,7 @@ def main():
             noise_scaled = torch.full((bsz, seq_len, feature_dim), noise_norm, device=Config.device, dtype=torch.float)
 
             # Generate input noise scaled by precomputed_std
-            input_noise = torch.randn_like(x0) * (noise_raw * model.precomputed_std)
+            input_noise = torch.randn_like(x0) * (noise_raw * model.precomputed_std.view(1, -1, 1))
             # Create noisy input by adding the scaled noise to the clean input
             x_noisy = x0 + input_noise
 
@@ -115,7 +115,7 @@ def main():
                     noise_norm = (noise_raw - Config.NOISE_MIN) / (Config.NOISE_MAX - Config.NOISE_MIN)
                     noise_scaled = torch.full((bsz, seq_len, feature_dim), noise_norm, device=Config.device, dtype=torch.float)
 
-                    input_noise = torch.randn_like(x0) * (noise_raw * model.precomputed_std)
+                    input_noise = torch.randn_like(x0) * (noise_raw * model.precomputed_std.view(1, -1, 1))
                     x_noisy = x0 + input_noise
 
                     pred = model(
