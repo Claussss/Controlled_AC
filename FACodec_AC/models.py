@@ -173,6 +173,9 @@ class DiffusionTransformerModel(nn.Module):
         # NEW: Add noise_proj to process noise_scaled as conditioning input
         self.noise_proj = nn.Linear(feature_dim, d_model * 2)
 
+        # NEW: fc_zc2 head, concatenating encoder output h and zc1 prediction
+        self.fc_zc2 = nn.Linear(d_model + feature_dim, feature_dim)
+
         # load std
         self.register_buffer("precomputed_std", torch.load(std_file_path))
 
@@ -182,7 +185,7 @@ class DiffusionTransformerModel(nn.Module):
                 noise_scaled: torch.Tensor,
                 padding_mask: torch.BoolTensor = None,
                 prosody_cond: torch.Tensor = None  
-    ) -> torch.Tensor:
+    ) -> tuple:
         x = x.transpose(1, 2)
         bsz, seq_len = x.size() if x.dim() == 2 else (x.shape[0], x.shape[1])
         device = x.device
@@ -210,8 +213,14 @@ class DiffusionTransformerModel(nn.Module):
         
         # Forward through encoder
         h = self.encoder(h, cond, src_key_padding_mask=padding_mask)
-        reconstruction = self.fc_out(h)
         
-        return reconstruction
+        # zc1 prediction head
+        zc1_pred = self.fc_out(h)
+        
+        # NEW: predict zc2 by concatenating h and zc1_pred
+        zc2_input = torch.cat([h, zc1_pred], dim=-1)
+        zc2_pred = self.fc_zc2(zc2_input)
+        
+        return zc1_pred, zc2_pred
 
 

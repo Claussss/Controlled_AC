@@ -7,10 +7,10 @@ if SCRIPT_LOCATION == "server":
         exp_num = os.getenv('EXP_NUM', 0)  # This is specified in my slurm script
         # Data and training parameters
         wav_dir = '/u/yurii/Projects/datasets/LJSpeech-1.1/wavs'
-        facodec_dataset_dir = '/u/yurii/Projects/datasets/LJSpeech-1.1/facodec_dataset'
-        std_content_path = os.path.join(facodec_dataset_dir, 'stats', 'std_content.pt')
+        facodec_dataset_dir = '/u/yurii/Projects/datasets/LJSpeech-1.1/facodec_dataset_zc1_zc2'
+        std_content_path = os.path.join(facodec_dataset_dir, 'stats', 'std_zc1.pt')
         std_prosody_path = os.path.join(facodec_dataset_dir, 'stats', 'std_prosody.pt') 
-        phoneme_cond_dir = '/u/yurii/Projects/datasets/LJSpeech-1.1/phone_dataset'
+        phoneme_cond_dir = '/u/yurii/Projects/datasets/LJSpeech-1.1/phone_dataset_old_phonemizer'
         checkpoint_path = f'/u/yurii/Projects/Controlled_AC/checkpoints/model_exp_{exp_num}.pt'
         tensorboard_dir = f'/u/yurii/Projects/Controlled_AC/tensorboard/exp_{exp_num}'
         
@@ -52,10 +52,10 @@ else:
 
         exp_num = 777 # Default experiment name
         wav_dir = '/home/yurii/Projects/AC/ljspeech/LJSpeech-1.1/wavs'
-        facodec_dataset_dir = '/home/yurii/Projects/AC/ljspeech/facodec_dataset'
-        std_content_path = '/home/yurii/Projects/AC/ljspeech/zc1_dataset/stats/std.pt'#os.path.join(facodec_dataset_dir, 'stats', 'std_content.pt')
+        facodec_dataset_dir = '/home/yurii/Projects/AC/ljspeech/facodec_dataset_zc1_zc2'
+        std_content_path = os.path.join(facodec_dataset_dir, 'stats', 'std_zc1.pt')
         std_prosody_path = os.path.join(facodec_dataset_dir, 'stats', 'std_prosody.pt') 
-        phoneme_cond_dir = '/home/yurii/Projects/AC/ljspeech/phone_dataset'
+        phoneme_cond_dir = '/home/yurii/Projects/AC/ljspeech/phone_dataset_zc1_zc2'
         checkpoint_path = f'./checkpoints/model_exp_{exp_num}.pt'
         tensorboard_dir = f'./tensorboard/exp_{exp_num}'
         

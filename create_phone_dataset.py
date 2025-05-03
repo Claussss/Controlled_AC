@@ -34,8 +34,8 @@ def main():
 		"regex": re.compile(r"[^a-z' ]"),
 		"LANG_TAG": "<eng-us>: ",
 		"dev_g2p": "cuda" if torch.cuda.is_available() else "cpu",
-		"g2p_tok": AutoTokenizer.from_pretrained("google/byt5-small"),
-		"g2p_net": T5ForConditionalGeneration.from_pretrained("charsiu/g2p_multilingual_byT5_tiny_16_layers_100").to(device).eval()
+		#"g2p_tok": AutoTokenizer.from_pretrained("google/byt5-small"),
+		#"g2p_net": T5ForConditionalGeneration.from_pretrained("charsiu/g2p_multilingual_byT5_tiny_16_layers_100").to(device).eval()
 	}
 
 
