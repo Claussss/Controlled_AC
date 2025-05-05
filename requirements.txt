@@ -9,3 +9,4 @@ einops
 soundfile
 librosa
 tensorboard
+torchcrepe
