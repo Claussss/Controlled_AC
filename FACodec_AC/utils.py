@@ -300,16 +300,18 @@ def get_phone_forced_alignment(embedding_path, audio_folder, transcript_metadata
 	else:
 		return aligned_ids, num_zeros, frame_scores, logits
 
-def get_pitched_aligned(embedding_path, audio_folder, device):
+def get_pitched_aligned(embedding_path, audio_folder, device, inference=False):
     """
     Extract pitch-aligned data from an audio file and embedding.
     """
     # Load embedding and count zeros in the mask
-    embedding = torch.load(embedding_path)
-    mask = embedding.get("mask", None)
-    if mask is None:
-        raise ValueError(f"No 'mask' key found in {embedding_path}")
-    num_zeros = int((mask == 0).sum().item())
+    num_zeros = 0
+    if not inference:
+        embedding = torch.load(embedding_path)
+        mask = embedding.get("mask", None)
+        if mask is None:
+            raise ValueError(f"No 'mask' key found in {embedding_path}")
+        num_zeros = int((mask == 0).sum().item())
 
     # Extract file ID and corresponding audio path
     file_id = os.path.splitext(os.path.basename(embedding_path))[0]
