@@ -11,6 +11,13 @@ class CodebookSequenceDataset(Dataset):
     Loads .pt files (containing {'tokens': ..., 'mask': ...}) from a directory.
     """
     def __init__(self, data_dir, wav2vec_cond_dir=None):
+        # raise an error if data_dir does not exist
+        if not os.path.isdir(data_dir):
+            raise FileNotFoundError(f"Data directory {data_dir} does not exist.")
+        # if wav2vec condition directory is provided, check that it exists
+        if wav2vec_cond_dir is not None and not os.path.isdir(wav2vec_cond_dir):
+            raise FileNotFoundError(f"Wav2vec condition directory {wav2vec_cond_dir} does not exist.")
+        
         self.files = glob.glob(os.path.join(data_dir, "*.pt"))
         self.wav2vec_cond_dir = wav2vec_cond_dir  # store wav2vec condition directory if provided
         if wav2vec_cond_dir is not None:

@@ -144,7 +144,7 @@ def main():
             writer.add_scalar("Loss/Eval_zc1", avg_test_loss_zc1, epoch+1)
             writer.add_scalar("Loss/Eval_zc2", avg_test_loss_zc2, epoch+1)
 
-            if avg_test_loss < best_eval_loss:
+            if (epoch+1) % Config.checkpoint_epochs == 0:
                 checkpoint_full_path = Config.checkpoint_path
                 checkpoint_dir = os.path.dirname(checkpoint_full_path)
                 os.makedirs(checkpoint_dir, exist_ok=True)
