@@ -11,11 +11,15 @@ from FACodec_AC.config import Config
 from FACodec_AC.utils import get_mask_positions
 from huggingface_hub import hf_hub_download
 import sys
-
-SCRIPT_LOCATION = os.environ.get("location")
+import math
 
 sys.path.append(os.path.join(os.path.dirname(__file__), '..', 'Amphion'))
 from models.codec.ns3_codec import FACodecDecoder
+
+def get_alphas_sigmas(t):
+    """Returns the scaling factors for the clean image (alpha) and for the
+    noise (sigma), given a timestep."""
+    return torch.cos(t * math.pi / 2), torch.sin(t * math.pi / 2)
 
 def main():
     # Seed for reproducibility
@@ -84,6 +88,7 @@ def main():
     best_eval_loss = float('inf')
 
     for epoch in range(Config.epochs):
+        wandb.log({"epoch": epoch})
         total_loss = 0.0
         num_batches = 0
 
@@ -95,26 +100,39 @@ def main():
             padded_phone_ids = padded_phone_ids.to(Config.device)
             prosody_cond = prosody_cond.to(Config.device)
             bsz, seq_len = x0.shape
+            
+            # diffusion noise distribution
+            t = torch.sigmoid(torch.randn(x0.shape[0]))
+            alphas, sigmas = get_alphas_sigmas(t)
+            # print(alphas)
+            
+            alphas = alphas[:, None, None].to(Config.device)
+            sigmas = sigmas[:, None, None].to(Config.device)
+            # alphas = alphas.to(Config.device)
+            # sigmas = sigmas.to(Config.device)
 
             # Determine which positions to mask (true = mask, false = no mask)
             mask_positions = get_mask_positions(x0, r_range=Config.r_range, p_drop=Config.p_drop)
 
             # Generate noise scaled by the precomputed std:
-            noise_level_value = random.uniform(Config.NOISE_MIN, Config.NOISE_MAX)
-            noise_level_value_norm = (noise_level_value - Config.NOISE_MIN) / (Config.NOISE_MAX - Config.NOISE_MIN)
-            noise_level = torch.full((bsz, 1), noise_level_value_norm, device=Config.device, dtype=torch.float)
-            feature_dim = model.proj_to_256.out_features
-            noise_scaled = torch.randn(bsz, seq_len, feature_dim, device=x0.device) * (noise_level_value * model.precomputed_std)
+            # noise_level_value = random.uniform(Config.NOISE_MIN, Config.NOISE_MAX)
+            # noise_level_value_norm = (noise_level_value - Config.NOISE_MIN) / (Config.NOISE_MAX - Config.NOISE_MIN)
+            # noise_level = torch.full((bsz, 1), noise_level_value_norm, device=Config.device, dtype=torch.float)
+            # feature_dim = model.proj_to_256.out_features
+            # noise_scaled = torch.randn(bsz, seq_len, feature_dim, device=x0.device) * (noise_level_value * model.precomputed_std)
 
             # Forward pass returns (prediction, target_clean)
             pred, target = model(
+                noisy_x=None,
                 x=x0, 
                 padded_phone_ids=padded_phone_ids, 
-                noise_level=noise_level,
+                t=t.to(Config.device),
                 mask_positions=mask_positions, 
                 padding_mask=padding_mask, 
-                noise_scaled=noise_scaled,
-                prosody_cond=prosody_cond
+                # noise_scaled=noise_scaled,
+                prosody_cond=prosody_cond,
+                alphas=alphas,
+                sigmas=sigmas
             )
 
             # Use MSE loss between prediction and clean target representation
@@ -122,10 +140,12 @@ def main():
             loss.backward()
             optimizer.step()
             total_loss += loss.item()
+            wandb.log({"train_loss": loss.item()})
 
             num_batches += 1
 
         avg_loss = total_loss / max(num_batches, 1)
+        wandb.log({"train_loss_epoch": avg_loss})
         print(f"Epoch {epoch+1}/{Config.epochs}, Loss={avg_loss:.4f}")
         writer.add_scalar("Loss/Train", avg_loss, epoch+1)
 
@@ -141,24 +161,34 @@ def main():
                     padded_phone_ids = test_phone_ids.to(Config.device)
                     prosody_cond = prosody_cond_test.to(Config.device)
                     bsz, seq_len = x0.shape
+                    
+                    # diffusion noise distribution
+                    t = torch.sigmoid(torch.randn(x0.shape[0]))
+                    alphas, sigmas = get_alphas_sigmas(t)
+                    
+                    alphas = alphas[:, None, None].to(Config.device)
+                    sigmas = sigmas[:, None, None].to(Config.device)
 
                     mask_positions = get_mask_positions(x0, r_range=Config.r_range, p_drop=Config.p_drop)
 
-                    noise_val = random.uniform(Config.NOISE_MIN, Config.NOISE_MAX)
-                    noise_level = torch.full((bsz, 1),
-                                             (noise_val - Config.NOISE_MIN) / (Config.NOISE_MAX - Config.NOISE_MIN),
-                                             device=Config.device)
-                    feat_dim = model.proj_to_256.out_features
-                    noise_scaled = torch.randn(bsz, seq_len, feat_dim, device=Config.device) * (noise_val * model.precomputed_std)
+                    # noise_val = random.uniform(Config.NOISE_MIN, Config.NOISE_MAX)
+                    # noise_level = torch.full((bsz, 1),
+                    #                          t,
+                    #                          device=Config.device)
+                    # feat_dim = model.proj_to_256.out_features
+                    # noise_scaled = torch.randn(bsz, seq_len, feat_dim, device=Config.device) * (noise_val * model.precomputed_std)
 
                     pred, target = model(
+                        noisy_x=None,
                         x=x0, 
                         padded_phone_ids=padded_phone_ids, 
-                        noise_level=noise_level,
+                        t=t.to(Config.device),
                         mask_positions=mask_positions, 
                         padding_mask=padding_mask, 
-                        noise_scaled=noise_scaled,
-                        prosody_cond=prosody_cond
+                        # noise_scaled=noise_scaled,
+                        prosody_cond=prosody_cond,
+                        alphas=alphas,
+                        sigmas=sigmas
                     )
                     # Compute MSE loss on the continuous predictions.
                     loss_test = F.mse_loss(pred, target)
@@ -167,6 +197,7 @@ def main():
                     test_batches += 1
 
             avg_test_loss = total_test_loss / max(test_batches, 1)
+            wandb.log({"eval_loss_epoch": avg_test_loss})
             print(f"Epoch {epoch+1}/{Config.epochs}, Eval Loss={avg_test_loss:.4f}")
             writer.add_scalar("Loss/Eval", avg_test_loss, epoch+1)
 
@@ -183,4 +214,10 @@ def main():
     writer.close()
 
 if __name__ == "__main__":
+    import wandb
+    os.environ["WANDB_API_KEY"] = "b91e5bd2690b460ea228f7b58fd008be543d9609"
+    wandb.init(project="control_ac",
+                entity="air_lab",
+                name=f'{Config.exp_num}',
+                config=Config.to_dict(),)
     main()

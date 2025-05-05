@@ -16,19 +16,19 @@ from num2words import num2words
 from phonemizer import phonemize
 from phonemizer.separator import Separator
 from phonemizer.backend.espeak.wrapper import EspeakWrapper
-SCRIPT_LOCATION = os.environ.get("location")
+# SCRIPT_LOCATION = os.environ.get("location")
 
 # This is just because delta cannot install espeak properly
-if SCRIPT_LOCATION == "server":
-    # absolute path to the library you compiled
-    lib_path = "/u/yurii/.local/lib/libespeak-ng.so.1"
-    # 1) let phonemizer know
-    EspeakWrapper.set_library(lib_path)          # python-only
-    # 2) make sure the dynamic loader can also find it
-    os.environ["LD_LIBRARY_PATH"] = (
-        os.path.dirname(lib_path) + ":" + os.environ.get("LD_LIBRARY_PATH", "")
-    )
-    os.environ["ESPEAK_DATA_PATH"] = "/u/yurii/.local/share/espeak-ng-data"
+# if SCRIPT_LOCATION == "server":
+#     # absolute path to the library you compiled
+#     lib_path = "/u/yurii/.local/lib/libespeak-ng.so.1"
+#     # 1) let phonemizer know
+#     EspeakWrapper.set_library(lib_path)          # python-only
+#     # 2) make sure the dynamic loader can also find it
+#     os.environ["LD_LIBRARY_PATH"] = (
+#         os.path.dirname(lib_path) + ":" + os.environ.get("LD_LIBRARY_PATH", "")
+#     )
+#     os.environ["ESPEAK_DATA_PATH"] = "/u/yurii/.local/share/espeak-ng-data"
 
 
 def pad_token_sequence(seq, target_len, pad_id):

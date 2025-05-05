@@ -188,13 +188,15 @@ class DiffusionTransformerModel(nn.Module):
         self.register_buffer("precomputed_std", torch.load(std_file_path))
 
     def forward(self,
-                x: torch.LongTensor,
-                padded_phone_ids: torch.LongTensor,
-                noise_level: torch.FloatTensor,
+                noisy_x: torch.Tensor,
+                t: torch.FloatTensor,
+                x: torch.LongTensor = None,
+                padded_phone_ids: torch.LongTensor = None,
                 mask_positions: torch.BoolTensor = None,
                 padding_mask: torch.BoolTensor = None,
-                noise_scaled: torch.Tensor = None,
-                prosody_cond: torch.Tensor = None  
+                prosody_cond: torch.Tensor = None,
+                alphas: torch.Tensor = None,
+                sigmas: torch.Tensor = None,
     ) -> torch.Tensor:
         """
         Parameters:
@@ -213,28 +215,39 @@ class DiffusionTransformerModel(nn.Module):
             prosody_cond (torch.Tensor, optional):
                 Additional prosody conditioning information provided per time step.
         """
-        bsz, seq_len = x.size()
-        device = x.device
+        bsz, seq_len = x.size() if x is not None else noisy_x.size()
+        device = x.device if x is not None else noisy_x.device
 
         # position IDs
         pos_ids = torch.arange(seq_len, device=device).unsqueeze(0)
 
         # sanitize pad tokens by replacing them with 0
-        x_mod = x.clone()
-        if padding_mask is not None:
-            x_mod = x_mod.masked_fill(padding_mask, 0)
+        if x is not None:
+            x_mod = x.clone()
+            if padding_mask is not None:
+                x_mod = x_mod.masked_fill(padding_mask, 0)
 
-        # codebook & upsample; compute clean target before noise is added.
-        code_vecs = self.codebook(x_mod)
-        code_up   = self.proj_to_256(code_vecs)    # target continuous representation
+            # codebook & upsample; compute clean target before noise is added.
+            code_vecs = self.codebook(x_mod)
+            code_up   = self.proj_to_256(code_vecs)    # target continuous representation
 
-        # add noise on a copy of code_up
-        code_noisy = code_up.clone()
-        if noise_scaled is None:
-            noise_scaled = torch.zeros_like(code_up)
-        if mask_positions is not None:
-            code_noisy[mask_positions] += noise_scaled[mask_positions]
+            # add noise on a copy of code_up
+            code_noisy = code_up.clone()
+        # if noise_scaled is None:
+        #     noise_scaled = torch.zeros_like(code_up)
+        if sigmas is not None and alphas is not None:
+            if mask_positions is not None:
+                # code_noisy[mask_positions] += noise_scaled[mask_positions]
+                noise = torch.randn_like(code_noisy).to(code_noisy.device)
+                code_noisy = code_noisy * alphas + noise * sigmas
 
+            assert mask_positions.all() == True, "mask_positions should be all True"
+            code_up = noise * alphas - code_up * sigmas
+        else:
+            assert noisy_x is not None, "Either sigmas and alphas or noisy_x should be provided"
+            code_noisy = noisy_x
+            code_up = code_noisy.clone()
+        
         # project to model dim
         token_emb = self.proj_to_d_model(code_noisy)      # [B,T,D]
         pos_emb   = self.pos_embedding(pos_ids)             # [1,T,D]
@@ -246,7 +259,7 @@ class DiffusionTransformerModel(nn.Module):
 
         # Build FiLM conditioning tensor
         m = mask_positions.float().unsqueeze(-1) if mask_positions is not None else torch.zeros(bsz, seq_len, 1, device=device)
-        n = noise_level.unsqueeze(-1).expand(-1, seq_len, -1)
+        n = t.unsqueeze(-1).unsqueeze(-1).expand(-1, seq_len, -1)
         cond_input = torch.cat([m, n], dim=-1)            # [B,T,2]
         γβ = self.cond_mlp(cond_input)                      # [B,T,2D]
 
