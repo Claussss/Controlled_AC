@@ -2,7 +2,7 @@ import os
 SCRIPT_LOCATION = os.environ.get("location")
 
 # Skip this, this is for my ssh, go to the else branch
-if SCRIPT_LOCATION == "server":
+if False:
     class Config:
         exp_num = os.getenv('EXP_NUM', 0)  # This is specified in my slurm script
         # Data and training parameters
@@ -49,22 +49,22 @@ else:
     # Local configuration. THIS IS WHAT YOU GUYS CHANGE
     class Config:
 
-        exp_num = 777 # Default experiment name
+        exp_num = 100 # Default experiment name
 
-        zc1_data_dir = '/home/yurii/Projects/AC/ljspeech/zc1_dataset'
-        phoneme_cond_dir = '/home/yurii/Projects/AC/ljspeech/wav2vec_dataset_forced'
-        checkpoint_path = f'./checkpoints/model_exp_{exp_num}.pt'
-        tensorboard_dir = f'./tensorboard/exp_{exp_num}'
+        zc1_data_dir = '/mnt/data/Speech/LJSpeech-1.1/facodec_dataset'
+        phoneme_cond_dir = '/mnt/data/Speech/LJSpeech-1.1/phone_dataset'
+        checkpoint_path = f'logs/checkpoints/model_exp_{exp_num}.pt'
+        tensorboard_dir = f'logs/tensorboard/exp_{exp_num}'
         
         max_seq_len = 807
         r_range = (0.3, 0.4) # Defines the lower and upper bound for the percentage of tokens 
                     # to drop in a contiguous segment when not dropping the entire sequence.
         p_drop = 0.1 # With probability p_drop, the entire sequence is masked.
         NOISE_MIN = 1.0
-        NOISE_MAX = 3.5 # How much noise will be added to the input(soft masking)
+        NOISE_MAX = 35.0 # How much noise will be added to the input(soft masking)
         lambda_unmasked = 0.01 # small weight on the unmasked penalty
 
-        batch_size = 4
+        batch_size = 64
         epochs = 100
         eval_epochs = 10
         checkpoint_epochs = 10
@@ -82,10 +82,15 @@ else:
         num_layers=6
         d_ff=2048
         dropout=0.1
-
+        
+        @classmethod
+        def to_dict(cls):
+            _dict = {key: value for key, value in cls.__dict__.items() if not key.startswith('__') and not callable(value)}
+            _dict.pop('to_dict')
+            return _dict
 
     class ASRConfig:
-        metadata_path = "/home/yurii/Projects/AC/ljspeech/LJSpeech-1.1/metadata.csv"
+        metadata_path = "/mnt/data/Speech/LJSpeech-1.1/metadata.csv"
         #PAD_ID = 29
         #VOCAB_SIZE = 29 # For grapheme-based ASR
         PAD_ID = 392

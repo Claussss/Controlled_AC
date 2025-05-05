@@ -6,11 +6,12 @@ import torch.nn.functional as F
 from torch.utils.data import DataLoader
 from torch.utils.tensorboard import SummaryWriter
 from FACodec_AC.dataset import CodebookSequenceDataset
-from FACodec_AC.models import DiffusionTransformerModel
+from FACodec_AC.models_ import DiffusionTransformerModel
 from FACodec_AC.config import Config
 from FACodec_AC.utils import get_mask_positions
 from huggingface_hub import hf_hub_download
 import sys
+from tqdm import tqdm
 
 SCRIPT_LOCATION = os.environ.get("location")
 
@@ -75,6 +76,11 @@ def main():
         max_seq_len=Config.max_seq_len
     )
     
+    # print model parameters size
+    num_params = sum(p.numel() for p in model.parameters() if p.requires_grad)
+    print(f"Total number of trainable parameters: {num_params / 1e6:.2f}M")
+    
+    
     # Inline training loop (integrating the content of train_diffusion_model)
     optimizer = optim.Adam(model.parameters(), lr=Config.lr)
     model.to(Config.device)
@@ -83,7 +89,8 @@ def main():
     writer = SummaryWriter(log_dir=Config.tensorboard_dir)
     best_eval_loss = float('inf')
 
-    for epoch in range(Config.epochs):
+    for epoch in tqdm(range(Config.epochs)):
+        wandb.log({"epoch": epoch})
         total_loss = 0.0
         correct_train = 0
         total_masked_train = 0
@@ -137,6 +144,8 @@ def main():
             loss.backward()
             optimizer.step()
             total_loss += loss.item()
+            
+            wandb.log({"train_loss": loss.item()})
 
             predicted = logits.argmax(dim=-1)
             correct = ((predicted == x0) & mask_positions).sum().item()
@@ -148,6 +157,8 @@ def main():
 
         avg_loss = total_loss / max(num_batches, 1)
         train_accuracy = correct_train / (total_masked_train + 1e-9)
+        wandb.log({"train_loss_epoch": avg_loss})
+        wandb.log({"train_accuracy_epoch": train_accuracy})
         print(f"Epoch {epoch+1}/{Config.epochs}, Loss={avg_loss:.4f}, Train Accuracy={train_accuracy:.4f}")
         writer.add_scalar("Loss/Train", avg_loss, epoch+1)
         writer.add_scalar("Accuracy/Train", train_accuracy, epoch+1)
@@ -207,6 +218,9 @@ def main():
             
             avg_test_loss = total_test_loss / max(test_batches, 1)
             test_accuracy = correct_eval / (total_masked_eval + 1e-9)
+            
+            wandb.log({"eval_loss_epoch": avg_test_loss})
+            wandb.log({"eval_accuracy": test_accuracy})
             print(f"Epoch {epoch+1}/{Config.epochs}, Eval Test Loss={avg_test_loss:.4f}, Eval Accuracy={test_accuracy:.4f}")
             writer.add_scalar("Loss/Eval", avg_test_loss, epoch+1)
             writer.add_scalar("Accuracy/Eval", test_accuracy, epoch+1)
@@ -224,4 +238,10 @@ def main():
     writer.close()
 
 if __name__ == "__main__":
+    import wandb
+    os.environ["WANDB_API_KEY"] = "b91e5bd2690b460ea228f7b58fd008be543d9609"
+    wandb.init(project="control_ac",
+                entity="air_lab",
+                name=f'{Config.exp_num}',
+                config=Config.to_dict(),)
     main()

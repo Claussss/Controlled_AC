@@ -69,7 +69,10 @@ env/
 # Log files
 logs/
 checkpoints/
+wandb/
 
 download_checkpoint.sh
 
 *.slurm
+*.wav
+*.pt

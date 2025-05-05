@@ -16,8 +16,6 @@ from transformers import (
 from nemo_text_processing.text_normalization.normalize import Normalizer
 import re
 
-SCRIPT_LOCATION = os.environ.get("location")
-
 def main():
 	# Initialize device and forced alignment pipeline.
 	device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
@@ -39,16 +37,10 @@ def main():
 	}
 
 	# Define directories
-	if SCRIPT_LOCATION == "server":
-		audio_folder = "/u/yurii/Projects/datasets/LJSpeech-1.1/wavs"
-		embeddings_folder = "/u/yurii/Projects/datasets/LJSpeech-1.1/phone_dataset"
-		output_folder = "/u/yurii/Projects/datasets/LJSpeech-1.1/wav2vec_dataset_forced_phoneme"
-		transcript_file = "/u/yurii/Projects/datasets/LJSpeech-1.1/metadata.csv"
-	else:
-		audio_folder = "/home/yurii/Projects/AC/ljspeech/LJSpeech-1.1/wavs"
-		embeddings_folder = "/home/yurii/Projects/AC/ljspeech/facodec_dataset"
-		output_folder = "/home/yurii/Projects/AC/ljspeech/phone_dataset"
-		transcript_file = "/home/yurii/Projects/AC/ljspeech/LJSpeech-1.1/metadata.csv"
+	audio_folder = "/mnt/data/Speech/LJSpeech-1.1/wavs"
+	embeddings_folder = "/mnt/data/Speech/LJSpeech-1.1/facodec_dataset"
+	output_folder = "/mnt/data/Speech/LJSpeech-1.1/phone_dataset"
+	transcript_file = "/mnt/data/Speech/LJSpeech-1.1/metadata.csv"
 
 	# Load transcript metadata.
 	transcript_metadata = load_transcript_metadata(transcript_file)

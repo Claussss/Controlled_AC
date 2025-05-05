@@ -9,3 +9,5 @@ einops
 soundfile
 librosa
 tensorboard
+nemo-text-processing
+wandb

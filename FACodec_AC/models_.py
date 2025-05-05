@@ -8,6 +8,8 @@ import torch.optim as optim
 from FACodec_AC.config import Config, ASRConfig
 from FACodec_AC.utils import get_mask_positions
 from torch.utils.tensorboard import SummaryWriter
+from einops import rearrange
+from torch import einsum
 
 
 class ConvFeedForward(nn.Module):
@@ -70,7 +72,17 @@ class CustomTransformerEncoderLayer(nn.Module):
     """
     def __init__(self, d_model: int=1024, nhead: int=8, d_ff: int=2048, dropout: float=0.1):
         super().__init__()
-        self.self_attn = nn.MultiheadAttention(d_model, nhead, dropout=dropout, batch_first=True)
+        # self.self_attn = nn.MultiheadAttention(d_model, nhead, dropout=dropout, batch_first=True)
+        self.self_attn = Attention(dim=d_model, 
+                                   dim_heads=d_model // nhead, 
+                                   dim_context=None,
+                                   causal=False, 
+                                   zero_init_output=True)
+        self.cross_attn = Attention(dim=d_model, 
+                                    dim_heads=d_model // nhead, 
+                                    dim_context=d_model,
+                                    causal=False, 
+                                    zero_init_output=True)
         self.norm1 = nn.LayerNorm(d_model)
         # conditional LayerNorm for post-FFN
         self.norm2 = CondLayerNorm(d_model)
@@ -93,9 +105,14 @@ class CustomTransformerEncoderLayer(nn.Module):
             torch.Tensor: Output tensor of shape [B, T, D] after applying self-attention, feed-forward operations, and conditional normalization.
         """
         # Self-attention block
-        attn_out, _ = self.self_attn(x, x, x, key_padding_mask=src_key_padding_mask)
+        # attn_out, _ = self.self_attn(x, x, x, key_padding_mask=src_key_padding_mask)
+        attn_out = self.self_attn(x, mask=src_key_padding_mask)
+
         x = x + self.dropout(attn_out)
         x = self.norm1(x)
+        
+        x = x + self.cross_attn(x, context = cond, mask=src_key_padding_mask)
+
 
         # Conv feed-forward block
         x_t = x.transpose(1, 2)  # [B, D, T]
@@ -104,7 +121,14 @@ class CustomTransformerEncoderLayer(nn.Module):
         x = x + self.dropout(ff_out)
 
         # Conditional LayerNorm with FiLM parameters
-        return self.norm2(x, cond)
+        # return self.norm2(x, cond)
+        return x
+    
+def or_reduce(masks):
+    head, *body = masks
+    for rest in body:
+        head = head | rest
+    return head
     
 class Attention(nn.Module):
     def __init__(
@@ -149,7 +173,7 @@ class Attention(nn.Module):
 
         # self.use_fa_flash = torch.cuda.is_available() and flash_attn_func is not None
         
-        self.use_pt_flash = False
+        self.use_pt_flash = True
         self.use_fa_flash = False
         
         self.sdp_kwargs = dict(
@@ -216,6 +240,7 @@ class Attention(nn.Module):
 
             causal = False
         
+        # print('q shape:', q.shape, 'k shape:', k.shape, 'v shape:', v.shape)
         with torch.backends.cuda.sdp_kernel(**self.sdp_kwargs):
             out = F.scaled_dot_product_attention(
                 q, k, v,
@@ -239,6 +264,7 @@ class Attention(nn.Module):
         rotary_pos_emb = None,
         causal = None
     ):
+        # print('x shape:', x.shape, 'context shape:', context.shape if context is not None else None)
         h, kv_h, has_context = self.num_heads, self.kv_heads, context is not None
 
         kv_input = context if has_context else x
@@ -321,7 +347,7 @@ class Attention(nn.Module):
             out = natten.functional.natten1dav(attn, v, kernel_size = self.natten_kernel_size, dilation=1).to(dtype_in)
 
         # Prioritize Flash Attention 2
-        elif self.use_fa_flash:
+        elif False:
             # print('flash attention 2 is used')
             assert final_attn_mask is None, 'masking not yet supported for Flash Attention 2'
             # Flash Attention 2 requires FP16 inputs
@@ -335,11 +361,10 @@ class Attention(nn.Module):
 
         # Fall back to PyTorch implementation
         elif self.use_pt_flash:
-            print('pt attention is used')
             out = self.flash_attn(q, k, v, causal = causal, mask = final_attn_mask)
 
         else:
-            # print('custom attention is used')
+            print('custom attention is used')
             # Fall back to custom implementation
 
             if h != kv_h:
@@ -389,119 +414,6 @@ class Attention(nn.Module):
 
         return out
     
-
-class TransformerBlock(nn.Module):
-    def __init__(
-            self,
-            dim,
-            dim_heads = 64,
-            cross_attend = False,
-            dim_context = None,
-            global_cond_dim = None,
-            causal = False,
-            zero_init_branch_outputs = True,
-            conformer = False,
-            layer_ix = -1,
-            remove_norms = False,
-            attn_kwargs = {},
-            ff_kwargs = {},
-            norm_kwargs = {}
-    ):
-        
-        super().__init__()
-        self.dim = dim
-        self.dim_heads = dim_heads
-        self.cross_attend = cross_attend
-        self.dim_context = dim_context
-        self.causal = causal
-
-        self.pre_norm = LayerNorm(dim, **norm_kwargs) if not remove_norms else nn.Identity()
-
-        self.self_attn = Attention(
-            dim,
-            dim_heads = dim_heads,
-            causal = causal,
-            zero_init_output=zero_init_branch_outputs,
-            **attn_kwargs
-        )
-
-        if cross_attend:
-            self.cross_attend_norm = LayerNorm(dim, **norm_kwargs) if not remove_norms else nn.Identity()
-            self.cross_attn = Attention(
-                dim,
-                dim_heads = dim_heads,
-                dim_context=dim_context,
-                causal = causal,
-                zero_init_output=zero_init_branch_outputs,
-                **attn_kwargs
-            )
-        
-        self.ff_norm = LayerNorm(dim, **norm_kwargs) if not remove_norms else nn.Identity()
-        self.ff = FeedForward(dim, zero_init_output=zero_init_branch_outputs, **ff_kwargs)
-
-        self.layer_ix = layer_ix
-
-        self.conformer = ConformerModule(dim, norm_kwargs=norm_kwargs) if conformer else None
-
-        self.global_cond_dim = global_cond_dim
-
-        if global_cond_dim is not None:
-            self.to_scale_shift_gate = nn.Sequential(
-                nn.SiLU(),
-                nn.Linear(global_cond_dim, dim * 6, bias=False)
-            )
-
-            nn.init.zeros_(self.to_scale_shift_gate[1].weight)
-            #nn.init.zeros_(self.to_scale_shift_gate_self[1].bias)
-
-    def forward(
-        self,
-        x,
-        context = None,
-        global_cond=None,
-        mask = None,
-        context_mask = None,
-        rotary_pos_emb = None
-    ):
-        if self.global_cond_dim is not None and self.global_cond_dim > 0 and global_cond is not None:
-            
-            scale_self, shift_self, gate_self, scale_ff, shift_ff, gate_ff = self.to_scale_shift_gate(global_cond).unsqueeze(1).chunk(6, dim = -1)
-
-            # self-attention with adaLN
-            residual = x
-            x = self.pre_norm(x)
-            x = x * (1 + scale_self) + shift_self
-            x = self.self_attn(x, mask = mask, rotary_pos_emb = rotary_pos_emb)
-            x = x * torch.sigmoid(1 - gate_self)
-            x = x + residual
-
-            if context is not None:
-                x = x + self.cross_attn(self.cross_attend_norm(x), context = context, context_mask = context_mask)
-
-            if self.conformer is not None:
-                x = x + self.conformer(x)
-
-            # feedforward with adaLN
-            residual = x
-            x = self.ff_norm(x)
-            x = x * (1 + scale_ff) + shift_ff
-            x = self.ff(x)
-            x = x * torch.sigmoid(1 - gate_ff)
-            x = x + residual
-
-        else:
-            x = x + self.self_attn(self.pre_norm(x), mask = mask, rotary_pos_emb = rotary_pos_emb)
-
-            if context is not None:
-                x = x + self.cross_attn(self.cross_attend_norm(x), context = context, context_mask = context_mask)
-
-            if self.conformer is not None:
-                x = x + self.conformer(x)
-
-            x = x + self.ff(self.ff_norm(x))
-
-        return x
-
 
 class CustomTransformerEncoder(nn.Module):
     """
@@ -559,19 +471,38 @@ class DiffusionTransformerModel(nn.Module):
         self.pos_embedding = nn.Embedding(max_seq_len, d_model)
 
         # conditional FiLM MLP: input [mask_bit, noise_level]
+        # self.cond_mlp = nn.Sequential(
+        #     nn.Linear(2, d_model * 2),
+        #     nn.ReLU(),
+        # )
         self.cond_mlp = nn.Sequential(
-            nn.Linear(2, d_model * 2),
+            nn.Linear(2, 512),
             nn.ReLU(),
+            nn.Linear(512, 256),
         )
+        
 
         # prosody conditioning projection: prosody_cond is (B, 256, seq_len)
-        self.prosody_proj = nn.Linear(256, d_model * 2)
+        # self.prosody_proj = nn.Linear(256, d_model * 2)
+        # self.prosody_proj = nn.Linear(256, d_model)
         # TODO: remove later, not needed. (now the trained weights use it)
-        self.acoustic_proj = nn.Linear(256, d_model * 2)
+        # self.acoustic_proj = nn.Linear(256, d_model * 2)
 
         # phone conditioning
         self.phone_embedding = nn.Embedding(ASRConfig.VOCAB_SIZE + 1, d_model)
-        self.phone_proj = nn.Linear(d_model, d_model * 2)
+        # self.phone_proj = nn.Linear(d_model, d_model * 2)
+        # self.phone_proj = nn.Linear(d_model, 1)
+        self.phone_proj = nn.Sequential(
+            nn.Linear(d_model, d_model*2),
+            nn.ReLU(),
+            nn.Linear(d_model*2, 512),
+        )
+        # self.prosody_cond_proj = nn.Linear(256, 254)
+        self.prosody_cond_proj = nn.Sequential(
+            nn.Linear(256, 512),
+            nn.ReLU(),
+            nn.Linear(512, 256)
+        )
 
         # Extra dropout for conditioning signals
         self.dropout_cond = nn.Dropout(0.1)
@@ -642,50 +573,52 @@ class DiffusionTransformerModel(nn.Module):
         # Obtain phone embeddings and apply dropout
         phone_emb = self.phone_embedding(padded_phone_ids)  # [B, T, D]
         phone_emb = self.dropout_cond(phone_emb)
+        
         h = token_emb + pos_emb + phone_emb
+        
+        # print(h.shape)
+        
 
         # --- Build FiLM conditioning tensor ---
         m = mask_positions.float().unsqueeze(-1) if mask_positions is not None else torch.zeros(bsz, seq_len, 1, device=device)
         # TODO: test whether FiLM is good for mask_pos
         n = noise_level.unsqueeze(-1).expand(-1, seq_len, -1)
         cond_input = torch.cat([m, n], dim=-1)            # [B,T,2]
-        γβ = self.cond_mlp(cond_input)                    # [B,T,2D]
+        # γβ = self.cond_mlp(cond_input)                    # [B,T,2D]
+        
+       
+        cond_input = self.cond_mlp(cond_input)                     # [B, 2D, T]  
+        # n = n.transpose(1, 2)
+        
+        # padded_phone_ids = padded_phone_ids.unsqueeze(1)  # [B, 1, T] 
+        phone_cross = self.phone_proj(phone_emb) 
+        # phone_cross = phone_cross.transpose(1, 2)              
+        # prosody_in = prosody_cond.transpose(1, 2)                   
+        # print(n.shape)
+        # print(prosody_cond.shape)
+        # print(phone_cross.shape)
+        # cross_cond = prosody_cond.transpose(1, 2)
+        prosody_cond = self.prosody_cond_proj(prosody_cond.transpose(1, 2))  # [B, 256, T] -> [B, 254, T]
+        cross_cond = torch.cat([cond_input, prosody_cond, phone_cross], dim=-1)  # [B, 2D+256+1, T]
+        # print(cross_cond.shape)
+        # print(cross_cond.shape)
+        # exit()
+        # cross_cond = cross_cond.transpose(1, 2)  # [B, T, 2D+256+1]
+        # print(cross_cond.shape)
 
         # Incorporate prosody conditioning if provided:
-        if prosody_cond is not None:
-            # prosody_cond: (B, 256, seq_len) -> transpose to (B, seq_len, 256)
-            prosody_in = prosody_cond.transpose(1, 2)
-            # Apply dropout to prosody input
-            prosody_in = self.dropout_cond(prosody_in)
-            prosody_γβ = self.prosody_proj(prosody_in)         # [B, T, 2D]
-            γβ = γβ + prosody_γβ
+        # if prosody_cond is not None:
+        #     # prosody_cond: (B, 256, seq_len) -> transpose to (B, seq_len, 256)
+        #     prosody_in = prosody_cond.transpose(1, 2)
+        #     # Apply dropout to prosody input
+        #     prosody_in = self.dropout_cond(prosody_in)
+        #     prosody_γβ = self.prosody_proj(prosody_in)         # [B, T, 2D]
+        #     γβ = γβ + prosody_γβ
 
-        phone_film = self.phone_proj(phone_emb)                # [B, T, 2D]
-        γβ = γβ + phone_film
+        # phone_film = self.phone_proj(phone_emb)                # [B, T, 2D]
+        # γβ = γβ + phone_film
 
         # Pass through conditional encoder using the combined FiLM parameters:
-        h = self.encoder(h, γβ, src_key_padding_mask=padding_mask)
+        h = self.encoder(h, cross_cond, src_key_padding_mask=padding_mask)
 
         return self.fc_out(h)
-
-
-class LayerNorm(nn.Module):
-    def __init__(self, dim, bias=False, fix_scale=False):
-        """
-        bias-less layernorm has been shown to be more stable. most newer models have moved towards rmsnorm, also bias-less
-        """
-        super().__init__()
-
-        if fix_scale:
-            self.register_buffer("gamma", torch.ones(dim))
-        else:
-            self.gamma = nn.Parameter(torch.ones(dim))
-
-        if bias:
-            self.beta = nn.Parameter(torch.zeros(dim))
-        else:
-            self.register_buffer("beta", torch.zeros(dim))
-
-
-    def forward(self, x):
-        return F.layer_norm(x, x.shape[-1:], weight=self.gamma, bias=self.beta)
