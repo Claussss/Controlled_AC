@@ -10,7 +10,7 @@ if SCRIPT_LOCATION == "server":
         facodec_dataset_dir = '/u/yurii/Projects/datasets/LJSpeech-1.1/facodec_dataset_zc1_zc2'
         std_content_path = os.path.join(facodec_dataset_dir, 'stats', 'std_zc1.pt')
         std_prosody_path = os.path.join(facodec_dataset_dir, 'stats', 'std_prosody.pt') 
-        phoneme_cond_dir = '/u/yurii/Projects/datasets/LJSpeech-1.1/phone_dataset_old_phonemizer'
+        phoneme_cond_dir = '/u/yurii/Projects/datasets/LJSpeech-1.1/wav2vec_dataset_forced_phoneme'
         checkpoint_path = f'/u/yurii/Projects/Controlled_AC/checkpoints/model_exp_{exp_num}.pt'
         tensorboard_dir = f'/u/yurii/Projects/Controlled_AC/tensorboard/exp_{exp_num}'
         
@@ -46,6 +46,19 @@ if SCRIPT_LOCATION == "server":
         metadata_path = "/u/yurii/Projects/datasets/LJSpeech-1.1/metadata.csv"
         PAD_ID = 392
         VOCAB_SIZE = 392
+
+    class PitchConfig:
+        hop_ms = 10
+        median_ms = 100
+        downsample_factor = 4
+        n_bins = 32 # 0 - 31 for pitch, 32 unvoiced silence, 33 pad, 34 tokens in total
+        PAD_ID = 33
+        VOCAB_SIZE = 34
+        std_path = '/u/yurii/Projects/datasets/LJSpeech-1.1/facodec_dataset_zc1_zc2/stats/std_prosody.pt'
+        pitch_cond_dir = '/u/yurii/Projects/datasets/LJSpeech-1.1/pitch_dataset'
+
+        NOISE_MIN = 1.0
+        NOISE_MAX = 15
 else:
     # Local configuration. THIS IS WHAT YOU GUYS CHANGE
     class Config:
@@ -67,7 +80,7 @@ else:
         NOISE_MAX = 20 # How much noise will be added to the input(soft masking)
         lambda_unmasked = 0.01 # small weight on the unmasked penalty
 
-        batch_size = 4
+        batch_size = 2
         epochs = 100
         eval_epochs = 1
         checkpoint_epochs = 10
@@ -91,3 +104,16 @@ else:
         metadata_path = "/home/yurii/Projects/AC/ljspeech/LJSpeech-1.1/metadata.csv"
         PAD_ID = 392
         VOCAB_SIZE = 392
+
+    class PitchConfig:
+        hop_ms = 10
+        median_ms = 100
+        downsample_factor = 4
+        n_bins = 32 # 0 - 31 for pitch, 32 unvoiced silence, 33 pad, 34 tokens in total
+        PAD_ID = 33
+        VOCAB_SIZE = 34
+        std_path = '/home/yurii/Projects/AC/ljspeech/zc1_dataset/stats/std.pt' # TODO fix it, it is refering to cotnent
+        pitch_cond_dir = '/home/yurii/Projects/AC/ljspeech/pitch_dataset'
+
+        NOISE_MIN = 1.0
+        NOISE_MAX = 15

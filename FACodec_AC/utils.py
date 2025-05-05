@@ -4,7 +4,7 @@ import torch
 import torchaudio
 from concurrent.futures import ProcessPoolExecutor, as_completed
 import tqdm
-from FACodec_AC.config import Config, ASRConfig
+from FACodec_AC.config import Config, ASRConfig, PitchConfig
 import csv
 import random
 import string
@@ -17,6 +17,10 @@ from phonemizer import phonemize
 from phonemizer.separator import Separator
 from phonemizer.backend.espeak.wrapper import EspeakWrapper
 from enum import Enum
+import torchcrepe
+import numpy as np
+import pandas as pd
+
 SCRIPT_LOCATION = os.environ.get("location")
 
 sep = Separator(phone=" ", word="", syllable="")
@@ -296,6 +300,37 @@ def get_phone_forced_alignment(embedding_path, audio_folder, transcript_metadata
 	else:
 		return aligned_ids, num_zeros, frame_scores, logits
 
+def get_pitched_aligned(embedding_path, audio_folder, device):
+    """
+    Extract pitch-aligned data from an audio file and embedding.
+    """
+    # Load embedding and count zeros in the mask
+    embedding = torch.load(embedding_path)
+    mask = embedding.get("mask", None)
+    if mask is None:
+        raise ValueError(f"No 'mask' key found in {embedding_path}")
+    num_zeros = int((mask == 0).sum().item())
+
+    # Extract file ID and corresponding audio path
+    file_id = os.path.splitext(os.path.basename(embedding_path))[0]
+    audio_path = os.path.join(audio_folder, f"{file_id}.wav")
+    if not os.path.exists(audio_path):
+        raise FileNotFoundError(f"Audio file not found: {audio_path}")
+
+    # Load audio and extract pitch
+    wav_waveform, wav_sr = torchaudio.load(audio_path)
+    if wav_sr != 16000:
+        resample = torchaudio.transforms.Resample(orig_freq=wav_sr, new_freq=16000)
+        wav_waveform = resample(wav_waveform)
+    wav_waveform = wav_waveform.to(device)
+
+    t, f0 = extract_pitch(wav_waveform, wav_sr, hop_ms=PitchConfig.hop_ms, fmin=50, fmax=500, crepe_model="full")
+    t_coarse, f0_coarse = coarse_emotion_f0(t, f0, hop_ms=PitchConfig.hop_ms, median_ms=PitchConfig.median_ms, downsample_factor=PitchConfig.downsample_factor)
+    f0_quant = quantize_f0(f0_hz=f0_coarse, n_bins=PitchConfig.n_bins, f0_min=50, f0_max=500)
+    f0_quant = torch.tensor(f0_quant).unsqueeze(0).to(device)
+
+    return f0_quant, num_zeros
+
 class QuantizerNames(Enum):
     prosody = 0
     content = 1
@@ -324,3 +359,103 @@ def get_z_from_indx(tokens, mask, fa_decoder, layer=0, quantizer_num=QuantizerNa
     #z_c1[pad_mask] = 0
     z_c1 = rearrange(z_c1, "b t d -> b d t")
     return z_c1
+
+
+def extract_pitch(wav_waveform: torch.Tensor,
+                  wav_sr: int = 16000,
+                  hop_ms: float = 10.0,
+                  fmin: int = 50,
+                  fmax: int = 500,
+                  crepe_model: str = "full") -> tuple[np.ndarray, np.ndarray]:
+    """
+    Params
+    ----
+    wav_path    : path to .wav (any sr / bit‑depth)
+    sr_target   : resample rate for analysis (CREPE is trained at 16 kHz)
+    hop_ms      : frame hop in milliseconds
+    fmin, fmax  : analysis range in Hz
+    crepe_model : "full" (robust) or "tiny" (faster) – only for torchcrepe
+    """
+
+    
+
+    hop_length = int(round(hop_ms * 1e-3 * wav_sr))      # samples
+
+    with torch.inference_mode():
+        f0, pd = torchcrepe.predict(
+            wav_waveform,
+            wav_sr,
+            hop_length,
+            fmin,
+            fmax,
+            model=crepe_model,
+            batch_size=1024,
+            device=Config.device,
+            return_periodicity=True,
+        )
+        f0 = f0.squeeze(0).cpu().numpy()          # [frames]
+        pd = pd.squeeze(0).cpu().numpy()
+        f0[pd < 0.3] = np.nan                     # simple voicing mask   
+        times = np.arange(len(f0)) * hop_length / wav_sr
+
+        return times, f0
+    
+
+def coarse_emotion_f0(times: np.ndarray,
+                      f0: np.ndarray,
+                      hop_ms: float = 10.0,
+                      median_ms: float = 100.0,
+                      downsample_factor: int = 4):
+    """
+    Given a 10 ms-hop CREPE pitch track, produce a coarse emotion envelope:
+      1) 100 ms median-filter (low-pass)
+      2) down-sample by factor 4 (→ 40 ms hop)
+
+    Args:
+    -----
+    times               : 1D array of frame center times (s), length N
+    f0                  : 1D array of pitch values (Hz or NaN), length N
+    hop_ms              : CREPE hop in ms (default 10)
+    median_ms           : window size for median LP in ms (default 100)
+    downsample_factor   : how many frames to skip when down-sampling
+
+    Returns:
+    --------
+    times_coarse        : 1D array of coarse frame times (s), length ≈ N/downsample_factor
+    f0_coarse           : 1D array of coarse pitch (Hz or NaN), same length
+    """
+    # 1) median-filter window in frames
+    window_frames = int(np.round(median_ms / hop_ms))
+    # ensure odd kernel for symmetry
+    if window_frames % 2 == 0:
+        window_frames += 1
+
+    # 2) apply median-filter (centered)
+    f0_lp = pd.Series(f0).rolling(window=window_frames,
+                                  center=True,
+                                  min_periods=1).median().values
+
+    # 3) down-sample
+    f0_coarse   = f0_lp[::downsample_factor]
+    times_coarse = times[::downsample_factor]
+
+    return times_coarse, f0_coarse
+
+def quantize_f0(f0_hz, n_bins=32, f0_min=50, f0_max=500):
+    """
+    Converts an f0 vector (Hz, NaN=unvoiced) to discrete bin IDs.
+    Returns:
+        ids  – int array, 0..n_bins‑1 for voiced, n_bins for unvoiced
+    """
+    # Log‑scale edges
+    log_f0 = np.log2(f0_hz)
+    log_min, log_max = np.log2([f0_min, f0_max])
+
+    # Clip & normalize
+    voiced = ~np.isnan(log_f0)
+    cents = (log_f0[voiced] - log_min) / (log_max - log_min)
+    cents = np.clip(cents, 0, 0.9999)
+
+    ids = np.full_like(f0_hz, fill_value=n_bins, dtype=np.int16)  # default=UNVOICED
+    ids[voiced] = (cents * n_bins).astype(np.int16)
+    return ids

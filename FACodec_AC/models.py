@@ -5,7 +5,7 @@ import torch
 import torch.nn as nn
 import torch.nn.functional as F
 import torch.optim as optim
-from FACodec_AC.config import Config, ASRConfig
+from FACodec_AC.config import Config, ASRConfig, PitchConfig
 
 
 class ConvFeedForward(nn.Module):
@@ -138,9 +138,12 @@ class DiffusionTransformerModel(nn.Module):
         num_layers: int = 12,
         d_ff: int = 2048,
         dropout: float = 0.1,
-        max_seq_len: int = 4096
+        max_seq_len: int = 4096,
+        prosody_model: bool = False,
     ):
         super().__init__()
+
+        self.prosody_model = prosody_model
         self.d_model = d_model
 
         # Input feature dim is fixed as 256 (removed self.proj_to_256)
@@ -159,8 +162,11 @@ class DiffusionTransformerModel(nn.Module):
         self.prosody_proj = nn.Linear(256, d_model * 2)
 
         # phone conditioning
-        self.phone_embedding = nn.Embedding(ASRConfig.VOCAB_SIZE + 1, d_model)
-        self.phone_proj = nn.Linear(d_model, d_model * 2)
+        if self.prosody_model:
+            self.global_cond_embedding = nn.Embedding(PitchConfig.VOCAB_SIZE + 1, d_model)
+        else:
+            self.global_cond_embedding = nn.Embedding(ASRConfig.VOCAB_SIZE + 1, d_model)
+        self.global_cond_proj = nn.Linear(d_model, d_model * 2)
 
         # Extra dropout for conditioning signals
         self.dropout_cond = nn.Dropout(0.1)
@@ -170,18 +176,19 @@ class DiffusionTransformerModel(nn.Module):
         feature_dim = 256
         self.fc_out = nn.Linear(d_model, feature_dim)
 
-        # NEW: Add noise_proj to process noise_scaled as conditioning input
+        # Add noise_proj to process noise_scaled as conditioning input
         self.noise_proj = nn.Linear(feature_dim, d_model * 2)
 
-        # NEW: fc_zc2 head, concatenating encoder output h and zc1 prediction
-        self.fc_zc2 = nn.Linear(d_model + feature_dim, feature_dim)
+        if not self.prosody_model:
+            # fc_zc2 head, concatenating encoder output h and zc1 prediction
+            self.fc_zc2 = nn.Linear(d_model + feature_dim, feature_dim)
 
         # load std
         self.register_buffer("precomputed_std", torch.load(std_file_path))
 
     def forward(self,
                 x: torch.Tensor,  # x is always continuous with dim 256
-                padded_phone_ids: torch.LongTensor,
+                padded_global_cond_ids: torch.LongTensor,
                 noise_scaled: torch.Tensor,
                 padding_mask: torch.BoolTensor = None,
                 prosody_cond: torch.Tensor = None  
@@ -196,17 +203,18 @@ class DiffusionTransformerModel(nn.Module):
         # Use continuous input x directly (dim=256)
         code_up = x
         
-        # Project to model dimension and add positional & phone embeddings
+        # Project to model dimension and add positional & global cond embeddings
         token_emb = self.proj_to_d_model(code_up)      # [B, T, D]
         pos_emb   = self.pos_embedding(pos_ids)         # [1, T, D]
-        phone_emb = self.phone_embedding(padded_phone_ids)
-        phone_emb = self.dropout_cond(phone_emb)
-        h = token_emb + pos_emb + phone_emb
+        global_cond_emb = self.global_cond_embedding(padded_global_cond_ids)
+        global_cond_emb = self.dropout_cond(global_cond_emb)
+        h = token_emb + pos_emb + global_cond_emb
         
         # Build conditioning using noise_scaled and phone/prosody cues, with dropout applied
         noise_cond = self.dropout_cond(self.noise_proj(noise_scaled))  # [B, T, 2*d_model]
-        phone_cond = self.dropout_cond(self.phone_proj(phone_emb))       # [B, T, 2*d_model]
+        phone_cond = self.dropout_cond(self.global_cond_proj(global_cond_emb))       # [B, T, 2*d_model]
         cond = noise_cond + phone_cond
+
         if prosody_cond is not None:
             prosody_repr = self.dropout_cond(self.prosody_proj(prosody_cond.transpose(1, 2)))
             cond += prosody_repr
@@ -217,10 +225,11 @@ class DiffusionTransformerModel(nn.Module):
         # zc1 prediction head
         zc1_pred = self.fc_out(h)
         
-        # NEW: predict zc2 by concatenating h and zc1_pred
-        zc2_input = torch.cat([h, zc1_pred], dim=-1)
-        zc2_pred = self.fc_zc2(zc2_input)
-        
-        return zc1_pred, zc2_pred
+        if self.prosody_model:
+            return zc1_pred
+        else:
+            zc2_input = torch.cat([h, zc1_pred], dim=-1)
+            zc2_pred = self.fc_zc2(zc2_input)
+            return zc1_pred, zc2_pred
 
 

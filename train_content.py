@@ -5,7 +5,7 @@ import torch.optim as optim
 import torch.nn.functional as F
 from torch.utils.data import DataLoader
 from torch.utils.tensorboard import SummaryWriter
-from FACodec_AC.dataset import CodebookSequenceDataset
+from FACodec_AC.dataset import FACodecContentDataset
 from FACodec_AC.models import DiffusionTransformerModel
 from FACodec_AC.config import Config
 from huggingface_hub import hf_hub_download
@@ -22,11 +22,11 @@ def main():
     random.seed(42)
     
     # Create train and test datasets/dataloaders
-    train_dataset = CodebookSequenceDataset(
+    train_dataset = FACodecContentDataset(
         os.path.join(Config.facodec_dataset_dir, 'train'),
         os.path.join(Config.phoneme_cond_dir, 'train')
     )
-    test_dataset  = CodebookSequenceDataset(
+    test_dataset  = FACodecContentDataset(
         os.path.join(Config.facodec_dataset_dir, 'test'),
         os.path.join(Config.phoneme_cond_dir, 'test')
     )
@@ -78,7 +78,7 @@ def main():
             # Forward pass returns both predictions from the model:
             zc1_pred, zc2_pred = model(
                 x=x_noisy,
-                padded_phone_ids=padded_phone_ids,
+                padded_global_cond_ids=padded_phone_ids,
                 noise_scaled=noise_scaled,
                 padding_mask=padding_mask,
                 prosody_cond=prosody_cond
@@ -125,7 +125,7 @@ def main():
 
                     zc1_pred, zc2_pred = model(
                         x=x_noisy,
-                        padded_phone_ids=padded_phone_ids,
+                        padded_global_cond_ids=padded_phone_ids,
                         noise_scaled=noise_scaled,
                         padding_mask=padding_mask,
                         prosody_cond=prosody_cond
