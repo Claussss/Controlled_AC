@@ -69,6 +69,9 @@ env/
 # Log files
 logs/
 checkpoints/
+wandb/
+*.pt
+*.wav
 
 download_checkpoint.sh
 
