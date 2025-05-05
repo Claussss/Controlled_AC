@@ -20,6 +20,7 @@ from enum import Enum
 import torchcrepe
 import numpy as np
 import pandas as pd
+from scipy.signal import butter, filtfilt
 
 SCRIPT_LOCATION = os.environ.get("location")
 
@@ -300,6 +301,13 @@ def get_phone_forced_alignment(embedding_path, audio_folder, transcript_metadata
 	else:
 		return aligned_ids, num_zeros, frame_scores, logits
 
+def normalize_per_utt(f0_hz):
+    voiced = f0_hz[~np.isnan(f0_hz)]
+    if len(voiced):
+        offset = np.median(np.log2(voiced))          # log‑Hz median
+        f0_hz  = f0_hz / (2.0 ** offset)             # divide → median = 1 ×
+    return f0_hz
+
 def get_pitched_aligned(embedding_path, audio_folder, device, inference=False):
     """
     Extract pitch-aligned data from an audio file and embedding.
@@ -328,7 +336,9 @@ def get_pitched_aligned(embedding_path, audio_folder, device, inference=False):
 
     t, f0 = extract_pitch(wav_waveform, wav_sr, hop_ms=PitchConfig.hop_ms, fmin=50, fmax=500, crepe_model="full")
     t_coarse, f0_coarse = coarse_emotion_f0(t, f0, hop_ms=PitchConfig.hop_ms, median_ms=PitchConfig.median_ms, downsample_factor=PitchConfig.downsample_factor)
-    f0_quant = quantize_f0(f0_hz=f0_coarse, n_bins=PitchConfig.n_bins, f0_min=50, f0_max=500)
+    f0_lp = lowpass(f0_coarse, cutoff_hz=PitchConfig.lowpass_cutoff, sr=1000.0 / PitchConfig.hop_ms) 
+    f0_norm = normalize_per_utt(f0_lp)
+    f0_quant = quantize_f0(f0_hz=f0_norm, n_bins=PitchConfig.n_bins, f0_min=0.5, f0_max=2.0)
     f0_quant = torch.tensor(f0_quant).unsqueeze(0).to(device)
 
     return f0_quant, num_zeros
@@ -363,12 +373,39 @@ def get_z_from_indx(tokens, mask, fa_decoder, layer=0, quantizer_num=QuantizerNa
     return z_c1
 
 
+
+def lowpass(x, cutoff_hz, sr, order=4):
+    """
+    Low‑pass filter that is NaN‑aware.
+    - x:        1‑D numpy array (may contain NaNs)
+    - cutoff_hz: desired cutoff
+    - sr:       sample‑rate of the sequence (Hz)
+    """
+    voiced = ~np.isnan(x)
+    if voiced.sum() < order * 3:      # not enough voiced frames to filter
+        return x                      # just return as‑is
+
+    # --- 1) fill gaps by linear interpolation
+    x_filled = x.copy()
+    idx      = np.flatnonzero(voiced)
+    x_filled[~voiced] = np.interp(np.flatnonzero(~voiced), idx, x[idx])
+
+    # --- 2) ordinary Butterworth low‑pass
+    nyq = sr / 2.0
+    b, a = butter(order, cutoff_hz / nyq, btype="low")
+    x_smooth = filtfilt(b, a, x_filled, method="pad")
+
+    # --- 3) put NaNs back where the gaps were
+    x_smooth[~voiced] = np.nan
+    return x_smooth
+
 def extract_pitch(wav_waveform: torch.Tensor,
                   wav_sr: int = 16000,
                   hop_ms: float = 10.0,
                   fmin: int = 50,
                   fmax: int = 500,
-                  crepe_model: str = "full") -> tuple[np.ndarray, np.ndarray]:
+                  crepe_model: str = "full",
+                  unvoiced_treshold=0.3) -> tuple[np.ndarray, np.ndarray]:
     """
     Params
     ----
@@ -397,7 +434,7 @@ def extract_pitch(wav_waveform: torch.Tensor,
         )
         f0 = f0.squeeze(0).cpu().numpy()          # [frames]
         pd = pd.squeeze(0).cpu().numpy()
-        f0[pd < 0.3] = np.nan                     # simple voicing mask   
+        f0[pd < unvoiced_treshold] = np.nan                     # simple voicing mask   
         times = np.arange(len(f0)) * hop_length / wav_sr
 
         return times, f0

@@ -49,16 +49,17 @@ if SCRIPT_LOCATION == "server":
 
     class PitchConfig:
         hop_ms = 10
-        median_ms = 100
-        downsample_factor = 4
-        n_bins = 32 # 0 - 31 for pitch, 32 unvoiced silence, 33 pad, 34 tokens in total
-        PAD_ID = 33
-        VOCAB_SIZE = 34
+        median_ms = 210
+        downsample_factor = 10
+        lowpass_cutoff = 20
+        n_bins = 16 # 0 - 15 for pitch, 16 unvoiced silence, 17 pad, 18 tokens in total
+        PAD_ID = 17
+        VOCAB_SIZE = 18
         std_path = '/u/yurii/Projects/datasets/LJSpeech-1.1/facodec_dataset_zc1_zc2/stats/std_prosody.pt'
         pitch_cond_dir = '/u/yurii/Projects/datasets/LJSpeech-1.1/pitch_dataset'
 
         NOISE_MIN = 1.0
-        NOISE_MAX = 15
+        NOISE_MAX = 20
 else:
     # Local configuration. THIS IS WHAT YOU GUYS CHANGE
     class Config:
@@ -107,13 +108,14 @@ else:
 
     class PitchConfig:
         hop_ms = 10
-        median_ms = 100
-        downsample_factor = 4
-        n_bins = 32 # 0 - 31 for pitch, 32 unvoiced silence, 33 pad, 34 tokens in total
-        PAD_ID = 33
-        VOCAB_SIZE = 34
+        median_ms = 210
+        downsample_factor = 10
+        lowpass_cutoff = 20
+        n_bins = 16 # 0 - 15 for pitch, 16 unvoiced silence, 17 pad, 18 tokens in total
+        PAD_ID = 17
+        VOCAB_SIZE = 18
         std_path = '/home/yurii/Projects/AC/ljspeech/zc1_dataset/stats/std.pt' # TODO fix it, it is refering to cotnent
         pitch_cond_dir = '/home/yurii/Projects/AC/ljspeech/pitch_dataset'
 
         NOISE_MIN = 1.0
-        NOISE_MAX = 15
+        NOISE_MAX = 20
