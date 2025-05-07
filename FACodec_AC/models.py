@@ -155,9 +155,6 @@ class DiffusionTransformerModel(nn.Module):
             nn.ReLU(),
         )
 
-        # prosody conditioning projection
-        self.prosody_proj = nn.Linear(256, d_model * 2)
-
         # phone conditioning
         self.phone_embedding = nn.Embedding(ASRConfig.VOCAB_SIZE + 1, d_model)
         self.phone_proj = nn.Linear(d_model, d_model * 2)
@@ -176,6 +173,10 @@ class DiffusionTransformerModel(nn.Module):
         # NEW: fc_zc2 head, concatenating encoder output h and zc1 prediction
         self.fc_zc2 = nn.Linear(d_model + feature_dim, feature_dim)
 
+        # NEW: Add prediction heads for prosody and acoustic from combined zc and h.
+        self.fc_prosody = nn.Linear(d_model + feature_dim, feature_dim)
+        self.fc_acoustic = nn.Linear(d_model + feature_dim, feature_dim)
+
         # load std
         self.register_buffer("precomputed_std", torch.load(std_file_path))
 
@@ -183,8 +184,7 @@ class DiffusionTransformerModel(nn.Module):
                 x: torch.Tensor,  # x is always continuous with dim 256
                 padded_phone_ids: torch.LongTensor,
                 noise_scaled: torch.Tensor,
-                padding_mask: torch.BoolTensor = None,
-                prosody_cond: torch.Tensor = None  
+                padding_mask: torch.BoolTensor = None
     ) -> tuple:
         x = x.transpose(1, 2)
         bsz, seq_len = x.size() if x.dim() == 2 else (x.shape[0], x.shape[1])
@@ -203,24 +203,25 @@ class DiffusionTransformerModel(nn.Module):
         phone_emb = self.dropout_cond(phone_emb)
         h = token_emb + pos_emb + phone_emb
         
-        # Build conditioning using noise_scaled and phone/prosody cues, with dropout applied
+        # Build conditioning using noise_scaled and phone cues (remove prosody conditioning)
         noise_cond = self.dropout_cond(self.noise_proj(noise_scaled))  # [B, T, 2*d_model]
         phone_cond = self.dropout_cond(self.phone_proj(phone_emb))       # [B, T, 2*d_model]
         cond = noise_cond + phone_cond
-        if prosody_cond is not None:
-            prosody_repr = self.dropout_cond(self.prosody_proj(prosody_cond.transpose(1, 2)))
-            cond += prosody_repr
         
         # Forward through encoder
         h = self.encoder(h, cond, src_key_padding_mask=padding_mask)
         
         # zc1 prediction head
         zc1_pred = self.fc_out(h)
+        # zc2 prediction head
+        zc2_pred = self.fc_zc2(torch.cat([h, zc1_pred], dim=-1))
+        # Compute combined representation zc = zc1_pred + zc2_pred
+        zc = zc1_pred + zc2_pred
+        # Predict prosody and acoustic from combined zc and h
+        combined = torch.cat([zc, h], dim=-1)
+        prosody_pred = self.fc_prosody(combined)
+        acoustic_pred = self.fc_acoustic(combined)
         
-        # NEW: predict zc2 by concatenating h and zc1_pred
-        zc2_input = torch.cat([h, zc1_pred], dim=-1)
-        zc2_pred = self.fc_zc2(zc2_input)
-        
-        return zc1_pred, zc2_pred
+        return zc1_pred, zc2_pred, prosody_pred, acoustic_pred
 
 
