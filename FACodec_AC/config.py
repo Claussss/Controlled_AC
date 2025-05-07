@@ -66,10 +66,10 @@ else:
 
         exp_num = 777 # Default experiment name
         wav_dir = '/home/yurii/Projects/AC/ljspeech/LJSpeech-1.1/wavs'
-        facodec_dataset_dir = '/home/yurii/Projects/AC/ljspeech/facodec_dataset_zc1_zc2'
+        facodec_dataset_dir = '/home/yurii/Projects/AC/ljspeech/facodec_dataset_zc1_zc2_full'
         std_content_path = os.path.join(facodec_dataset_dir, 'stats', 'std_zc1.pt')
         std_prosody_path = os.path.join(facodec_dataset_dir, 'stats', 'std_prosody.pt') 
-        phoneme_cond_dir = '/home/yurii/Projects/AC/ljspeech/phone_dataset_zc1_zc2'
+        phoneme_cond_dir = '/home/yurii/Projects/AC/ljspeech/phone_dataset_777'
         checkpoint_path = f'./checkpoints/model_exp_{exp_num}.pt'
         tensorboard_dir = f'./tensorboard/exp_{exp_num}'
         
@@ -107,13 +107,24 @@ else:
         VOCAB_SIZE = 392
 
     class PitchConfig:
+        # hop_ms = 10
+        # median_ms = 210
+        # downsample_factor = 10
+        # lowpass_cutoff = 20
+        # n_bins = 16 # 0 - 15 for pitch, 16 unvoiced silence, 17 pad, 18 tokens in total
+        # PAD_ID = 17
+        # VOCAB_SIZE = 18
+
         hop_ms = 10
-        median_ms = 210
+        median_ms = 200
         downsample_factor = 10
         lowpass_cutoff = 20
-        n_bins = 16 # 0 - 15 for pitch, 16 unvoiced silence, 17 pad, 18 tokens in total
-        PAD_ID = 17
-        VOCAB_SIZE = 18
+        # n_bins = 32 # 0 - 15 for pitch, 16 unvoiced silence, 17 pad, 18 tokens in total
+        # PAD_ID = 33
+        # VOCAB_SIZE = 34
+        n_bins = 392 # 0 - 15 for pitch, 16 unvoiced silence, 17 pad, 18 tokens in total
+        PAD_ID = 392
+        VOCAB_SIZE = 393
         std_path = '/home/yurii/Projects/AC/ljspeech/zc1_dataset/stats/std.pt' # TODO fix it, it is refering to cotnent
         pitch_cond_dir = '/home/yurii/Projects/AC/ljspeech/pitch_dataset'
 

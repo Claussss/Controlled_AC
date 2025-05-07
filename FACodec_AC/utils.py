@@ -21,6 +21,7 @@ import torchcrepe
 import numpy as np
 import pandas as pd
 from scipy.signal import butter, filtfilt
+import matplotlib.pyplot as plt
 
 SCRIPT_LOCATION = os.environ.get("location")
 
@@ -339,6 +340,7 @@ def get_pitched_aligned(embedding_path, audio_folder, device, inference=False):
     f0_lp = lowpass(f0_coarse, cutoff_hz=PitchConfig.lowpass_cutoff, sr=1000.0 / PitchConfig.hop_ms) 
     f0_norm = normalize_per_utt(f0_lp)
     f0_quant = quantize_f0(f0_hz=f0_norm, n_bins=PitchConfig.n_bins, f0_min=0.5, f0_max=2.0)
+    #f0_quant = quantize_f0(f0_hz=f0_coarse, n_bins=PitchConfig.n_bins, f0_min=50, f0_max=500)
     f0_quant = torch.tensor(f0_quant).unsqueeze(0).to(device)
 
     return f0_quant, num_zeros
@@ -479,6 +481,15 @@ def coarse_emotion_f0(times: np.ndarray,
     times_coarse = times[::downsample_factor]
 
     return times_coarse, f0_coarse
+
+def plot_coarse_pitch_contour(t_coarse, f0_coarse, figsize=(10, 4)):
+    plt.figure(figsize=figsize)
+    plt.plot(t_coarse, f0_coarse, marker='o', linestyle='-')
+    plt.xlabel("Time (s)")
+    plt.ylabel("Frequency (Hz)")
+    plt.title("Coarse Pitch Contour")
+    plt.grid(True)
+    plt.show()
 
 def quantize_f0(f0_hz, n_bins=32, f0_min=50, f0_max=500):
     """

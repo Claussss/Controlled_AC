@@ -149,6 +149,9 @@ class DiffusionTransformerModel(nn.Module):
         # Input feature dim is fixed as 256 (removed self.proj_to_256)
         self.proj_to_d_model = nn.Linear(256, d_model)
 
+        if self.prosody_model:
+            self.proj_zc1_to_d_model = nn.Linear(256, d_model)
+
         # positional embeddings
         self.pos_embedding = nn.Embedding(max_seq_len, d_model)
 
@@ -206,13 +209,24 @@ class DiffusionTransformerModel(nn.Module):
         # Project to model dimension and add positional & global cond embeddings
         token_emb = self.proj_to_d_model(code_up)      # [B, T, D]
         pos_emb   = self.pos_embedding(pos_ids)         # [1, T, D]
-        global_cond_emb = self.global_cond_embedding(padded_global_cond_ids)
+        
+        
+        if self.prosody_model:
+            global_cond_emb = self.proj_zc1_to_d_model(prosody_cond.transpose(1, 2))
+        else:
+            global_cond_emb = self.global_cond_embedding(padded_global_cond_ids)
+
         global_cond_emb = self.dropout_cond(global_cond_emb)
+
         h = token_emb + pos_emb + global_cond_emb
         
         # Build conditioning using noise_scaled and phone/prosody cues, with dropout applied
         noise_cond = self.dropout_cond(self.noise_proj(noise_scaled))  # [B, T, 2*d_model]
-        phone_cond = self.dropout_cond(self.global_cond_proj(global_cond_emb))       # [B, T, 2*d_model]
+
+        if self.prosody_model:
+            phone_cond = torch.zeros_like(noise_cond)
+        else:
+            phone_cond = self.dropout_cond(self.global_cond_proj(global_cond_emb))       # [B, T, 2*d_model]
         cond = noise_cond + phone_cond
 
         if prosody_cond is not None:
