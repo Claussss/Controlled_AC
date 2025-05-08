@@ -13,9 +13,9 @@ def main():
     dataset = CPCDataset(Config.facodec_dataset_dir+'/train')
     dataloader = DataLoader(dataset, batch_size=Config.batch_size, shuffle=True)
 
-    model = CPC(dim=256, hidden=256, steps=12)
+    model = CPC(dim=256, hidden=128, steps=3)
     model.to(Config.device)
-    optimizer = optim.Adam(model.parameters(), lr=Config.lr)
+    optimizer = optim.Adam(model.parameters(), lr=1e-3)
 
     model.train()
     writer = SummaryWriter(log_dir=Config.tensorboard_dir)  # initialize SummaryWriter
@@ -43,6 +43,12 @@ def main():
         avg_loss = total_loss / n_batches
         print(f"Epoch {epoch+1}/{epochs}, Loss: {avg_loss:.4f}")
         writer.add_scalar("Loss/CPC_Train", avg_loss, epoch+1)  # log train loss
+        if (epoch+1) % Config.checkpoint_epochs == 0:
+            checkpoint_full_path = Config.checkpoint_path
+            checkpoint_dir = os.path.dirname(checkpoint_full_path)
+            os.makedirs(checkpoint_dir, exist_ok=True)
+            torch.save(model.state_dict(), checkpoint_full_path)
+            print(f"Checkpoint saved at {checkpoint_full_path} at epoch {epoch+1}")
 
     writer.close()  # close the writer
 
