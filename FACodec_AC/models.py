@@ -184,9 +184,15 @@ class DiffusionTransformerModel(nn.Module):
                 x: torch.Tensor,  # x is always continuous with dim 256
                 padded_phone_ids: torch.LongTensor,
                 noise_scaled: torch.Tensor,
+                real_zc1: torch.Tensor,
+                real_zc2: torch.Tensor,
+                real_prosody: torch.Tensor,
                 padding_mask: torch.BoolTensor = None
     ) -> tuple:
         x = x.transpose(1, 2)
+        real_zc1 = real_zc1.transpose(1, 2)
+        real_zc2 = real_zc2.transpose(1, 2)
+        real_prosody = real_prosody.transpose(1, 2)
         bsz, seq_len = x.size() if x.dim() == 2 else (x.shape[0], x.shape[1])
         device = x.device
         
@@ -203,7 +209,7 @@ class DiffusionTransformerModel(nn.Module):
         phone_emb = self.dropout_cond(phone_emb)
         h = token_emb + pos_emb + phone_emb
         
-        # Build conditioning using noise_scaled and phone cues (remove prosody conditioning)
+        # Build conditioning using noise_scaled and phone cues
         noise_cond = self.dropout_cond(self.noise_proj(noise_scaled))  # [B, T, 2*d_model]
         phone_cond = self.dropout_cond(self.phone_proj(phone_emb))       # [B, T, 2*d_model]
         cond = noise_cond + phone_cond
@@ -211,16 +217,17 @@ class DiffusionTransformerModel(nn.Module):
         # Forward through encoder
         h = self.encoder(h, cond, src_key_padding_mask=padding_mask)
         
-        # zc1 prediction head
+        # Teacher forcing: use real zc1 for prediction
         zc1_pred = self.fc_out(h)
-        # zc2 prediction head
-        zc2_pred = self.fc_zc2(torch.cat([h, zc1_pred], dim=-1))
-        # Compute combined representation zc = zc1_pred + zc2_pred
-        zc = zc1_pred + zc2_pred
-        # Predict prosody and acoustic from combined zc and h
-        combined = torch.cat([zc, h], dim=-1)
+        # Use real zc1 and h to predict zc2
+        zc2_pred = self.fc_zc2(torch.cat([h, real_zc1], dim=-1))
+        # Compute real zc = real_zc1 + real_zc2
+        real_zc = real_zc1 + real_zc2
+        # Use real zc and h to predict prosody
+        combined = torch.cat([real_zc, h], dim=-1)
         prosody_pred = self.fc_prosody(combined)
-        combined = torch.cat([combined, prosody_pred], dim=-1)
+        # Use real zc, real prosody, and h to predict acoustic
+        combined = torch.cat([combined, real_prosody], dim=-1)
         acoustic_pred = self.fc_acoustic(combined)
         
         return zc1_pred, zc2_pred, prosody_pred, acoustic_pred

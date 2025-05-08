@@ -74,11 +74,11 @@ def main():
         for zc1, zc2, padding_mask, padded_phone_ids, prosody, acoustic in dataloader_train:
             optimizer.zero_grad()
             x0 = zc1.to(Config.device)
-            padding_mask = padding_mask.to(Config.device)
-            padded_phone_ids = padded_phone_ids.to(Config.device)
+            zc2 = zc2.to(Config.device)
             prosody = prosody.to(Config.device)
             acoustic = acoustic.to(Config.device)
-            zc2 = zc2.to(Config.device)
+            padding_mask = padding_mask.to(Config.device)
+            padded_phone_ids = padded_phone_ids.to(Config.device)
             bsz, feature_dim, seq_len = x0.shape
 
             noise_raw = random.uniform(Config.NOISE_MIN, Config.NOISE_MAX)
@@ -88,11 +88,14 @@ def main():
             input_noise = torch.randn_like(x0) * (noise_raw * model.precomputed_std.view(1, -1, 1))
             x_noisy = x0 + input_noise
 
-            # Forward pass returns predictions for zc1, zc2, prosody and acoustic:
+            # Forward pass with teacher forcing
             zc1_pred, zc2_pred, prosody_pred, acoustic_pred = model(
                 x=x_noisy,
                 padded_phone_ids=padded_phone_ids,
                 noise_scaled=noise_scaled,
+                real_zc1=x0,
+                real_zc2=zc2,
+                real_prosody=prosody,
                 padding_mask=padding_mask
             )
 
@@ -137,11 +140,11 @@ def main():
             with torch.no_grad():
                 for zc1_val, zc2_val, padding_mask, test_phone_ids, prosody, acoustic in dataloader_test:
                     x0 = zc1_val.to(Config.device)
-                    padding_mask = padding_mask.to(Config.device)
-                    padded_phone_ids = test_phone_ids.to(Config.device)
+                    zc2_val = zc2_val.to(Config.device)
                     prosody = prosody.to(Config.device)
                     acoustic = acoustic.to(Config.device)
-                    zc2_val = zc2_val.to(Config.device)
+                    padding_mask = padding_mask.to(Config.device)
+                    padded_phone_ids = test_phone_ids.to(Config.device)
                     bsz, feature_dim, seq_len = x0.shape
                     noise_raw = random.uniform(Config.NOISE_MIN, Config.NOISE_MAX)
                     noise_norm = (noise_raw - Config.NOISE_MIN) / (Config.NOISE_MAX - Config.NOISE_MIN)
@@ -150,10 +153,14 @@ def main():
                     input_noise = torch.randn_like(x0) * (noise_raw * model.precomputed_std.view(1, -1, 1))
                     x_noisy = x0 + input_noise
 
+                    # Forward pass with teacher forcing
                     zc1_pred, zc2_pred, prosody_pred, acoustic_pred = model(
                         x=x_noisy,
                         padded_phone_ids=padded_phone_ids,
                         noise_scaled=noise_scaled,
+                        real_zc1=x0,
+                        real_zc2=zc2_val,
+                        real_prosody=prosody,
                         padding_mask=padding_mask
                     )
                     loss_zc1 = F.mse_loss(zc1_pred.transpose(1,2), x0)
