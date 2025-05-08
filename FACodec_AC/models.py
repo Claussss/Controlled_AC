@@ -175,7 +175,7 @@ class DiffusionTransformerModel(nn.Module):
 
         # NEW: Add prediction heads for prosody and acoustic from combined zc and h.
         self.fc_prosody = nn.Linear(d_model + feature_dim, feature_dim)
-        self.fc_acoustic = nn.Linear(d_model + feature_dim, feature_dim)
+        self.fc_acoustic = nn.Linear(d_model + 2*feature_dim, feature_dim)
 
         # load std
         self.register_buffer("precomputed_std", torch.load(std_file_path))
@@ -220,6 +220,7 @@ class DiffusionTransformerModel(nn.Module):
         # Predict prosody and acoustic from combined zc and h
         combined = torch.cat([zc, h], dim=-1)
         prosody_pred = self.fc_prosody(combined)
+        combined = torch.cat([combined, prosody_pred], dim=-1)
         acoustic_pred = self.fc_acoustic(combined)
         
         return zc1_pred, zc2_pred, prosody_pred, acoustic_pred
