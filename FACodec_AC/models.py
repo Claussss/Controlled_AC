@@ -223,4 +223,23 @@ class DiffusionTransformerModel(nn.Module):
         
         return zc1_pred, zc2_pred
 
+class CPC(nn.Module):
+    def __init__(self, dim=256, hidden=256, steps=12):
+        super().__init__()
+        self.gru = nn.GRU(dim, hidden, num_layers=2,
+                          batch_first=True, bidirectional=False)
+        self.pred = nn.ModuleList([nn.Linear(hidden, dim) for _ in range(steps)])
+        self.steps = steps
+
+    def forward(self, x, mask):
+        # x: (B,T,D)  mask: 0=valid , 1=pad
+        valid_mask = ~mask               # True for real frames
+        lengths    = valid_mask.sum(1).cpu()
+        packed_x   = nn.utils.rnn.pack_padded_sequence(
+                        x, lengths, batch_first=True, enforce_sorted=False)
+        packed_out,_ = self.gru(packed_x)
+        out,_ = nn.utils.rnn.pad_packed_sequence(
+                    packed_out, batch_first=True, total_length=x.size(1))
+        return out                       # (B,T,H)
+
 

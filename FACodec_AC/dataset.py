@@ -38,5 +38,34 @@ class CodebookSequenceDataset(Dataset):
             # load the corresponding wav2vec conditioning file with the same basename
             phone_cond_path = os.path.join(self.wav2vec_cond_dir, os.path.basename(self.files[idx]))
             phone_cond_data = torch.load(phone_cond_path)
-            return data['zc1'], data['zc2'], data['mask'], phone_cond_data, data['prosody']
+            return data['zc1'], data['zc2'], data['mask'], phone_cond_data, data['prosody'], data['acoustic']
         return data['content'], data['mask']
+
+
+class CPCDataset(Dataset):
+    """
+    Dataset for CPC training.
+    Each .pt file yields 3 samples: zc1, acoustic, and prosody.
+    """
+    def __init__(self, data_dir):
+        if not os.path.isdir(data_dir):
+            raise FileNotFoundError(f"Data directory {data_dir} does not exist.")
+        self.files = glob.glob(os.path.join(data_dir, "*.pt"))
+    
+    def __len__(self):
+        return len(self.files) * 3
+    
+    def __getitem__(self, idx):
+        file_idx = idx // 3
+        sample_type = idx % 3  # 0: zc1, 1: acoustic, 2: prosody
+        data = torch.load(self.files[file_idx])
+        if sample_type == 0:
+            latent = data['zc1']
+        elif sample_type == 1:
+            latent = data['acoustic']
+        else:
+            latent = data['prosody']
+        # Use existing mask if available; otherwise assume all positions valid.
+        mask = data.get('mask', torch.zeros(latent.shape[1], dtype=torch.long))  # 0=valid,1=pad
+        mask = mask.bool()                 # int → bool
+        return latent, mask
