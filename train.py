@@ -45,19 +45,23 @@ def main():
         max_seq_len=Config.max_seq_len
     )
     
-    optimizer = optim.Adam(model.parameters(), lr=Config.lr)
+    # Define learnable log‑variance parameters for each loss term
+    log_var_zc1    = torch.nn.Parameter(torch.zeros(1, device=Config.device))
+    log_var_zc2    = torch.nn.Parameter(torch.zeros(1, device=Config.device))
+    log_var_prosody= torch.nn.Parameter(torch.zeros(1, device=Config.device))
+    log_var_acoustic = torch.nn.Parameter(torch.zeros(1, device=Config.device))
+    
+    # Update the optimizer to include the log‑variance parameters
+    optimizer = optim.Adam(list(model.parameters()) + [
+        log_var_zc1, log_var_zc2, log_var_prosody, log_var_acoustic
+    ], lr=Config.lr)
+    
     model.to(Config.device)
     model.train()
 
     writer = SummaryWriter(log_dir=Config.tensorboard_dir)
     best_eval_loss = float('inf')
-
-    weights = {
-        "zc1":      0.38,
-        "zc2":      0.18,
-        "prosody":  0.44,
-        "acoustic": 0.002,
-    }
+    
     for epoch in range(Config.epochs):
         total_loss = 0.0
         total_loss_zc1 = 0.0
@@ -96,7 +100,11 @@ def main():
             loss_zc2 = F.mse_loss(zc2_pred.transpose(1,2), zc2)
             loss_prosody = F.mse_loss(prosody_pred.transpose(1,2), prosody)
             loss_acoustic = F.mse_loss(acoustic_pred.transpose(1,2), acoustic)
-            loss = weights['zc1']*loss_zc1 + weights['zc2']*loss_zc2 + weights['prosody']*loss_prosody + weights['acoustic']*loss_acoustic
+            # Use the learnable log‑variance weights
+            loss = (torch.exp(-log_var_zc1)*loss_zc1 + log_var_zc1 +
+                    torch.exp(-log_var_zc2)*loss_zc2 + log_var_zc2 +
+                    torch.exp(-log_var_prosody)*loss_prosody + log_var_prosody +
+                    torch.exp(-log_var_acoustic)*loss_acoustic + log_var_acoustic)
             loss.backward()
             optimizer.step()
             total_loss += loss.item()
@@ -152,7 +160,12 @@ def main():
                     loss_zc2 = F.mse_loss(zc2_pred.transpose(1,2), zc2_val)
                     loss_prosody = F.mse_loss(prosody_pred.transpose(1,2), prosody)
                     loss_acoustic = F.mse_loss(acoustic_pred.transpose(1,2), acoustic)
-                    total_test_loss += (weights['zc1']*loss_zc1.item() + weights['zc2']*loss_zc2.item() + weights['prosody']*loss_prosody.item() + weights['acoustic']*loss_acoustic.item())
+                    # Compute combined evaluation loss using learned weights
+                    loss_eval = (torch.exp(-log_var_zc1)*loss_zc1 + log_var_zc1 +
+                                 torch.exp(-log_var_zc2)*loss_zc2 + log_var_zc2 +
+                                 torch.exp(-log_var_prosody)*loss_prosody + log_var_prosody +
+                                 torch.exp(-log_var_acoustic)*loss_acoustic + log_var_acoustic)
+                    total_test_loss += loss_eval.item()
                     total_test_loss_zc1 += loss_zc1.item()
                     total_test_loss_zc2 += loss_zc2.item()
                     total_test_loss_prosody += loss_prosody.item()
