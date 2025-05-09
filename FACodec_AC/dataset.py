@@ -53,18 +53,12 @@ class CPCDataset(Dataset):
         self.files = glob.glob(os.path.join(data_dir, "*.pt"))
     
     def __len__(self):
-        return len(self.files) * 3
+        return len(self.files)
     
     def __getitem__(self, idx):
-        file_idx = idx // 3
-        sample_type = idx % 3  # 0: zc1, 1: acoustic, 2: prosody
+        file_idx = idx
         data = torch.load(self.files[file_idx])
-        if sample_type == 0:
-            latent = data['zc1']
-        elif sample_type == 1:
-            latent = data['acoustic']
-        else:
-            latent = data['prosody']
+        latent = data['zc1']
         # Use existing mask if available; otherwise assume all positions valid.
         mask = data.get('mask', torch.zeros(latent.shape[1], dtype=torch.long))  # 0=valid,1=pad
         mask = mask.bool()                 # int → bool

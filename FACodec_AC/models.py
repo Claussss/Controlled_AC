@@ -224,9 +224,9 @@ class DiffusionTransformerModel(nn.Module):
         return zc1_pred, zc2_pred
 
 class CPC(nn.Module):
-    def __init__(self, dim=256, hidden=256, steps=12):
+    def __init__(self, dim=256, hidden=256, steps=1, num_layers=2):
         super().__init__()
-        self.gru = nn.GRU(dim, hidden, num_layers=1,
+        self.gru = nn.GRU(dim, hidden, num_layers=num_layers,
                           batch_first=True, bidirectional=False)
         self.pred = nn.ModuleList([nn.Linear(hidden, dim) for _ in range(steps)])
         self.steps = steps

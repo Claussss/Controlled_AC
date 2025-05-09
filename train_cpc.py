@@ -12,8 +12,8 @@ def main():
     # Use the same dataset directory as facodec data
     dataset = CPCDataset(Config.facodec_dataset_dir+'/train')
     dataloader = DataLoader(dataset, batch_size=Config.batch_size, shuffle=True)
-    crop_len = 120 
-    model = CPC(dim=256, hidden=128, steps=3)
+    crop_len = 240 
+    model = CPC(dim=256, hidden=256, steps=6, num_layers=2)
     model.to(Config.device)
     optimizer = torch.optim.AdamW(model.parameters(), lr=5e-4, betas=(0.9,0.98))
     sched = torch.optim.lr_scheduler.LinearLR(optimizer, start_factor=0.1,
