@@ -7,10 +7,10 @@ if SCRIPT_LOCATION == "server":
         exp_num = os.getenv('EXP_NUM', 0)  # This is specified in my slurm script
         # Data and training parameters
         wav_dir = '/u/yurii/Projects/datasets/LJSpeech-1.1/wavs'
-        facodec_dataset_dir = '/u/yurii/Projects/datasets/LJSpeech-1.1/facodec_dataset_zc1_zc2'
+        facodec_dataset_dir = '/u/yurii/Projects/datasets/LJSpeech-1.1/facodec_dataset_zc1_zc2_dim8_not_quant'
         std_content_path = os.path.join(facodec_dataset_dir, 'stats', 'std_zc1.pt')
         std_prosody_path = os.path.join(facodec_dataset_dir, 'stats', 'std_prosody.pt') 
-        phoneme_cond_dir = '/u/yurii/Projects/datasets/LJSpeech-1.1/phone_dataset_old_phonemizer'
+        phoneme_cond_dir = '/u/yurii/Projects/datasets/LJSpeech-1.1/wav2vec_dataset_forced_phoneme'
         checkpoint_path = f'/u/yurii/Projects/Controlled_AC/checkpoints/model_exp_{exp_num}.pt'
         tensorboard_dir = f'/u/yurii/Projects/Controlled_AC/tensorboard/exp_{exp_num}'
         
