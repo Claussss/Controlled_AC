@@ -38,5 +38,5 @@ class CodebookSequenceDataset(Dataset):
             # load the corresponding wav2vec conditioning file with the same basename
             phone_cond_path = os.path.join(self.wav2vec_cond_dir, os.path.basename(self.files[idx]))
             phone_cond_data = torch.load(phone_cond_path)
-            return data['zc1'], data['zc2'], data['mask']
+            return data['zc1'], data['zc2'], data['mask'], phone_cond_data
         return data['content'], data['mask']

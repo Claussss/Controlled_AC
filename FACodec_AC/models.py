@@ -180,7 +180,8 @@ class DiffusionTransformerModel(nn.Module):
         self.register_buffer("precomputed_std", torch.load(std_file_path))
 
     def forward(self,
-                x: torch.Tensor,  # x is always continuous with dim 256
+                x: torch.Tensor,  # x is always continuous with dim 256,
+                zc1_ground_truth: torch.Tensor,
                 padded_phone_ids: torch.LongTensor,
                 noise_scaled: torch.Tensor,
                 padding_mask: torch.BoolTensor = None,
@@ -218,7 +219,7 @@ class DiffusionTransformerModel(nn.Module):
         zc1_pred = self.fc_out(h)
         
         # NEW: predict zc2 by concatenating h and zc1_pred
-        zc2_input = torch.cat([h, zc1_pred], dim=-1)
+        zc2_input = torch.cat([h, zc1_ground_truth.transpose(1,2)], dim=-1)
         zc2_pred = self.fc_zc2(zc2_input)
         
         return zc1_pred, zc2_pred
