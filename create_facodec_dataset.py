@@ -48,8 +48,6 @@ if device == 'cuda':
     fa_encoder = fa_encoder.to(device)
     fa_decoder = fa_decoder.to(device)
 
-
-
 wav_dir = Config.wav_dir
 
 all_wavs = glob.glob(os.path.join(wav_dir, '*.wav'))
@@ -66,16 +64,17 @@ os.makedirs(train_out, exist_ok=True)
 os.makedirs(test_out, exist_ok=True)
 
 if __name__ == "__main__":
-    # Initialize accumulators for zc1, zc2 and prosody as 256-dim tensors
-    global_sum_zc1   = torch.zeros(256, dtype=torch.float32)
-    global_sumsq_zc1 = torch.zeros(256, dtype=torch.float32)
-    global_count_zc1 = torch.zeros(256, dtype=torch.float32)
-    global_sum_zc2   = torch.zeros(256, dtype=torch.float32)
-    global_sumsq_zc2 = torch.zeros(256, dtype=torch.float32)
-    global_count_zc2 = torch.zeros(256, dtype=torch.float32)
-    global_sum_prosody   = torch.zeros(256, dtype=torch.float32)
-    global_sumsq_prosody = torch.zeros(256, dtype=torch.float32)
-    global_count_prosody = torch.zeros(256, dtype=torch.float32)
+    # Initialize accumulators for zc1, zc2 and prosody using feature_dim
+    feature_dim = 8
+    global_sum_zc1   = torch.zeros(feature_dim, dtype=torch.float32)
+    global_sumsq_zc1 = torch.zeros(feature_dim, dtype=torch.float32)
+    global_count_zc1 = torch.zeros(feature_dim, dtype=torch.float32)
+    global_sum_zc2   = torch.zeros(feature_dim, dtype=torch.float32)
+    global_sumsq_zc2 = torch.zeros(feature_dim, dtype=torch.float32)
+    global_count_zc2 = torch.zeros(feature_dim, dtype=torch.float32)
+    global_sum_prosody   = torch.zeros(feature_dim, dtype=torch.float32)
+    global_sumsq_prosody = torch.zeros(feature_dim, dtype=torch.float32)
+    global_count_prosody = torch.zeros(feature_dim, dtype=torch.float32)
 
     print("Processing train set...")
     for f in tqdm.tqdm(train_files, desc="Processing train files"):
@@ -88,13 +87,13 @@ if __name__ == "__main__":
             if "success" in status:
                 global_sum_zc1   += sum_zc1
                 global_sumsq_zc1 += sumsq_zc1
-                global_count_zc1 += torch.full((256,), count_zc1, dtype=torch.float32)
+                global_count_zc1 += torch.full((feature_dim,), count_zc1, dtype=torch.float32)
                 global_sum_zc2   += sum_zc2
                 global_sumsq_zc2 += sumsq_zc2
-                global_count_zc2 += torch.full((256,), count_zc2, dtype=torch.float32)
+                global_count_zc2 += torch.full((feature_dim,), count_zc2, dtype=torch.float32)
                 global_sum_prosody   += sum_prosody
                 global_sumsq_prosody += sumsq_prosody
-                global_count_prosody += torch.full((256,), count_prosody, dtype=torch.float32)
+                global_count_prosody += torch.full((feature_dim,), count_prosody, dtype=torch.float32)
         except Exception as e:
             print(f"Error processing {f}: {e}")
 

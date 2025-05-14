@@ -203,15 +203,15 @@ def process_wav_facodec(filepath, fa_encoder, fa_decoder, out_dir, device):
         zc1_vector = pad_token_sequence(zc1_vector, Config.max_seq_len, Config.PAD_ID)[0]
         zc2_vector = get_z_from_indx(vq_id[2], torch.zeros(vq_id[2].shape[1], dtype=torch.long), fa_decoder, layer=1)
         zc2_vector = pad_token_sequence(zc2_vector, Config.max_seq_len, Config.PAD_ID)[0]
-        prosody_vector, _ = pad_token_sequence(quantized_arr[0], Config.max_seq_len, Config.PAD_ID)
-        acoustic_vector, _ = pad_token_sequence(quantized_arr[2], Config.max_seq_len, Config.PAD_ID)
+        #prosody_vector, _ = pad_token_sequence(quantized_arr[0], Config.max_seq_len, Config.PAD_ID)
+        #acoustic_vector, _ = pad_token_sequence(quantized_arr[2], Config.max_seq_len, Config.PAD_ID)
         base = os.path.splitext(os.path.basename(filepath))[0]
-        torch.save({'zc1': zc1_vector, 'zc2': zc2_vector, 'mask': mask, 'prosody': prosody_vector, 'acoustic': acoustic_vector},
+        torch.save({'zc1': zc1_vector, 'zc2': zc2_vector, 'mask': mask},
                    os.path.join(out_dir, f"{base}.pt"))
         # Compute per-dimension std (unbiased) for each tensor (each std is 256-dim)
         std_zc1    = torch.std(zc1_vector.float(), dim=1, unbiased=True)
         std_zc2    = torch.std(zc2_vector.float(), dim=1, unbiased=True)
-        std_prosody= torch.std(prosody_vector.float(), dim=1, unbiased=True)
+        std_prosody= 0.0#torch.std(prosody_vector.float(), dim=1, unbiased=True)
         # Compute running aggregates per channel and move them to CPU
         sum_zc1   = zc1_vector.float().sum(dim=1).cpu()           # shape [256]
         sumsq_zc1 = (zc1_vector.float() ** 2).sum(dim=1).cpu()      # shape [256]
@@ -219,9 +219,9 @@ def process_wav_facodec(filepath, fa_encoder, fa_decoder, out_dir, device):
         sum_zc2   = zc2_vector.float().sum(dim=1).cpu()
         sumsq_zc2 = (zc2_vector.float() ** 2).sum(dim=1).cpu()
         count_zc2 = zc2_vector.size(1)
-        sum_prosody   = prosody_vector.float().sum(dim=1).cpu()
-        sumsq_prosody = (prosody_vector.float() ** 2).sum(dim=1).cpu()
-        count_prosody = prosody_vector.size(1)
+        sum_prosody   = 0.0#prosody_vector.float().sum(dim=1).cpu()
+        sumsq_prosody = 0.0#(prosody_vector.float() ** 2).sum(dim=1).cpu()
+        count_prosody = 0.0#prosody_vector.size(1)
         return (filepath, "success", std_zc1, std_zc2, std_prosody,
                 sum_zc1, sumsq_zc1, count_zc1,
                 sum_zc2, sumsq_zc2, count_zc2,
@@ -318,8 +318,8 @@ def get_z_from_indx(tokens, mask, fa_decoder, layer=0, quantizer_num=QuantizerNa
         quantizer_index = quantizer_num.value
         # Get codebook from the FACodec decoder.
         codebook = fa_decoder.quantizer[quantizer_index].layers[layer].codebook.weight  # [num_codes, code_dim]
-        e_q = torch.nn.functional.embedding(tokens_mod, codebook)     # [B, T, code_dim]
-        z_c1 = fa_decoder.quantizer[quantizer_index].layers[layer].out_proj(e_q)          # [B, T, 256]
+        z_c1 = torch.nn.functional.embedding(tokens_mod, codebook)     # [B, T, code_dim]
+        #z_c1 = fa_decoder.quantizer[quantizer_index].layers[layer].out_proj(e_q)          # [B, T, 256]
     #pad_mask = mask.unsqueeze(-1).expand_as(z_c1)
     #z_c1[pad_mask] = 0
     z_c1 = rearrange(z_c1, "b t d -> b d t")

@@ -144,7 +144,7 @@ class DiffusionTransformerModel(nn.Module):
         self.d_model = d_model
 
         # Input feature dim is fixed as 256 (removed self.proj_to_256)
-        self.proj_to_d_model = nn.Linear(256, d_model)
+        self.proj_to_d_model = nn.Linear(8, d_model)
 
         # positional embeddings
         self.pos_embedding = nn.Embedding(max_seq_len, d_model)
@@ -167,7 +167,7 @@ class DiffusionTransformerModel(nn.Module):
 
         # encoder & output; output feature dim is now 256
         self.encoder = CustomTransformerEncoder(num_layers, d_model, nhead, d_ff, dropout)
-        feature_dim = 256
+        feature_dim = 8
         self.fc_out = nn.Linear(d_model, feature_dim)
 
         # NEW: Add noise_proj to process noise_scaled as conditioning input

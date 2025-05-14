@@ -59,12 +59,12 @@ def main():
         num_batches = 0
 
         # --- Training ---
-        for zc1, zc2, padding_mask, padded_phone_ids, prosody_cond in dataloader_train:
+        for zc1, zc2, padding_mask, padded_phone_ids in dataloader_train:
             optimizer.zero_grad()
             x0 = zc1.to(Config.device)  # now x0 is zc1 from dataloader
             padding_mask = padding_mask.to(Config.device)
             padded_phone_ids = padded_phone_ids.to(Config.device)
-            prosody_cond = prosody_cond.to(Config.device)
+            #prosody_cond = prosody_cond.to(Config.device)
             zc2 = zc2.to(Config.device)
             bsz, feature_dim, seq_len = x0.shape
 
@@ -81,7 +81,7 @@ def main():
                 padded_phone_ids=padded_phone_ids,
                 noise_scaled=noise_scaled,
                 padding_mask=padding_mask,
-                prosody_cond=prosody_cond
+                prosody_cond=None
             )
 
             loss_zc1 = F.mse_loss(zc1_pred.transpose(1,2), x0)
@@ -109,11 +109,11 @@ def main():
             total_test_loss_zc2 = 0.0
             test_batches = 0
             with torch.no_grad():
-                for zc1_val, zc2_val, padding_mask, test_phone_ids, prosody_cond_test in dataloader_test:
+                for zc1_val, zc2_val, padding_mask, test_phone_ids in dataloader_test:
                     x0 = zc1_val.to(Config.device)
                     padding_mask = padding_mask.to(Config.device)
                     padded_phone_ids = test_phone_ids.to(Config.device)
-                    prosody_cond = prosody_cond_test.to(Config.device)
+                    #prosody_cond = prosody_cond_test.to(Config.device)
                     zc2_val = zc2_val.to(Config.device)
                     bsz, feature_dim, seq_len = x0.shape
                     noise_raw = random.uniform(Config.NOISE_MIN, Config.NOISE_MAX)
@@ -128,7 +128,7 @@ def main():
                         padded_phone_ids=padded_phone_ids,
                         noise_scaled=noise_scaled,
                         padding_mask=padding_mask,
-                        prosody_cond=prosody_cond
+                        prosody_cond=None
                     )
                     loss_zc1 = F.mse_loss(zc1_pred.transpose(1,2), x0)
                     loss_zc2 = F.mse_loss(zc2_pred.transpose(1,2), zc2_val)
