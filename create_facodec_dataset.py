@@ -107,21 +107,21 @@ if __name__ == "__main__":
 
     try:
         # Compute global standard deviations dynamically if sufficient data
-        if (global_count_zc1.min() > 1) and (global_count_zc2.min() > 1) and (global_count_prosody.min() > 1):
-            var_zc1 = (global_sumsq_zc1 - (global_sum_zc1 ** 2) / global_count_zc1) / (global_count_zc1 - 1)
-            var_zc2 = (global_sumsq_zc2 - (global_sum_zc2 ** 2) / global_count_zc2) / (global_count_zc2 - 1)
-            var_prosody = (global_sumsq_prosody - (global_sum_prosody ** 2) / global_count_prosody) / (global_count_prosody - 1)
-            global_std_zc1 = var_zc1.sqrt()
-            global_std_zc2 = var_zc2.sqrt()
-            global_std_prosody = var_prosody.sqrt()
-            # Save stats in a new sub-directory "stats"
-            stats_dir = os.path.join(output_dir, "stats")
-            os.makedirs(stats_dir, exist_ok=True)
-            torch.save(global_std_zc1, os.path.join(stats_dir, "std_zc1.pt"))
-            torch.save(global_std_zc2, os.path.join(stats_dir, "std_zc2.pt"))
-            torch.save(global_std_prosody, os.path.join(stats_dir, "std_prosody.pt"))
-            print(f"Saved global std stats to {stats_dir}")
-        else:
-            print("Insufficient data to compute global stats.")
+        #if (global_count_zc1.min() > 1) and (global_count_zc2.min() > 1) and (global_count_prosody.min() > 1):
+        var_zc1 = (global_sumsq_zc1 - (global_sum_zc1 ** 2) / global_count_zc1) / (global_count_zc1 - 1)
+        var_zc2 = (global_sumsq_zc2 - (global_sum_zc2 ** 2) / global_count_zc2) / (global_count_zc2 - 1)
+        var_prosody = (global_sumsq_prosody - (global_sum_prosody ** 2) / global_count_prosody) / (global_count_prosody - 1)
+        global_std_zc1 = var_zc1.sqrt()
+        global_std_zc2 = var_zc2.sqrt()
+        global_std_prosody = var_prosody.sqrt()
+        # Save stats in a new sub-directory "stats"
+        stats_dir = os.path.join(output_dir, "stats")
+        os.makedirs(stats_dir, exist_ok=True)
+        torch.save(global_std_zc1, os.path.join(stats_dir, "std_zc1.pt"))
+        torch.save(global_std_zc2, os.path.join(stats_dir, "std_zc2.pt"))
+        torch.save(global_std_prosody, os.path.join(stats_dir, "std_prosody.pt"))
+        print(f"Saved global std stats to {stats_dir}")
+        #else:
+            #print("Insufficient data to compute global stats.")
     except KeyboardInterrupt:
         print("Interrupted by user. Computing stats with data processed so far...")
