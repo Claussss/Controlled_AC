@@ -219,7 +219,7 @@ class DiffusionTransformerModel(nn.Module):
         zc1_pred = self.fc_out(h)
         
         # NEW: predict zc2 by concatenating h and zc1_pred
-        zc2_input = torch.cat([h, zc1_ground_truth.transpose(1,2)], dim=-1)
+        zc2_input = torch.cat([h, zc1_pred], dim=-1)
         zc2_pred = self.fc_zc2(zc2_input)
         
         return zc1_pred, zc2_pred

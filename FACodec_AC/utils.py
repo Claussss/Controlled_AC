@@ -316,10 +316,10 @@ def get_z_from_indx(tokens, mask, fa_decoder, layer=0, quantizer_num=QuantizerNa
     #tokens_mod[:,mask] = 0
     with torch.no_grad():
         quantizer_index = quantizer_num.value
-        z_c1 = fa_decoder.quantizer[quantizer_index].layers[layer].in_proj(tokens.transpose(1,2))  
+        #z_c1 = fa_decoder.quantizer[quantizer_index].layers[layer].in_proj(tokens.transpose(1,2))  
         # Get codebook from the FACodec decoder.
-        #codebook = fa_decoder.quantizer[quantizer_index].layers[layer].codebook.weight  # [num_codes, code_dim]
-        #z_c1 = torch.nn.functional.embedding(tokens_mod, codebook)     # [B, T, code_dim]
+        codebook = fa_decoder.quantizer[quantizer_index].layers[layer].codebook.weight  # [num_codes, code_dim]
+        z_c1 = torch.nn.functional.embedding(tokens_mod, codebook)     # [B, T, code_dim]
         #z_c1 = fa_decoder.quantizer[quantizer_index].layers[layer].out_proj(e_q)          # [B, T, 256]
     #pad_mask = mask.unsqueeze(-1).expand_as(z_c1)
     #z_c1[pad_mask] = 0

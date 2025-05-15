@@ -18,8 +18,8 @@ if SCRIPT_LOCATION == "server":
         r_range = (0.3, 0.4) # Defines the lower and upper bound for the percentage of tokens 
                     # to drop in a contiguous segment when not dropping the entire sequence.
         p_drop = 0.1 # With probability p_drop, the entire sequence is masked.
-        NOISE_MIN = 1.0
-        NOISE_MAX = 20 # How much noise will be added to the input(soft masking)
+        NOISE_MIN = 0
+        NOISE_MAX = 7 # How much noise will be added to the input(soft masking)
         
         lambda_unmasked = 0.01 # small weight on the unmasked penalty
 
