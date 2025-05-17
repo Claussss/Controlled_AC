@@ -15,6 +15,8 @@ from enum import Enum
 from phonemizer import phonemize
 from phonemizer.separator import Separator
 from phonemizer.backend.espeak.wrapper import EspeakWrapper
+from phonemizer.backend import EspeakBackend
+
 
 
 from huggingface_hub import hf_hub_download
@@ -26,6 +28,7 @@ from FACodec_AC.config import Config
 SCRIPT_LOCATION = os.environ.get("location")
 
 sep = Separator(phone=" ", word="", syllable="")
+backend = EspeakBackend('en-us') 
 
 # This is just because delta cannot install espeak properly
 if SCRIPT_LOCATION == "server":
@@ -86,8 +89,7 @@ def g2p(words, proc):
 	# phones = pipeline["g2p_tok"].batch_decode(out, skip_special_tokens=True)
 	# tidy = [p.replace("ˈ", "").replace("ˌ", "").replace("▁", "").replace(" ", "") for p in phones]
 	# return " ".join(tidy)
-    phone_str    = phonemize(words, language="en-us", backend="espeak",
-                            strip=True, separator=sep)
+    phone_str = backend.phonemize(words, separator=sep, strip=True)
     raw_seq      = phone_str[0].split()
 
         # 2) Load the target model’s phoneme vocab
