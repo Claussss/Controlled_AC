@@ -1,15 +1,17 @@
 # Controlled Accent Conversion (ControlledAC)
 
-This repository provides the code for preparing datasets and training a non-autoregressive transformer model for the Controlled Accent Conversion (AC) project. The model is conditioned on prosody, and phone features derived from LJSpeech.
+This repository provides the code for preparing datasets and training a non-autoregressive denoising transformer model for the Controlled Accent Conversion (AC) project. The model is conditioned on prosody, and phone features derived from LJSpeech.
 
 ## Directory Structure
 
 - **create_facodec_dataset.py**  
   Processes WAV files from an input folder (specified inside the script) and generates a `.pt` file for each WAV. Each file contains a dictionary with the following keys:
-  - `content`: codebook vectors for the content dimension, padded with zero vectors.
-  - `prosody`: codebook vectors for the prosody dimension, padded with zero vectors.
-  - `acoustic`: codebook vectors for acoustic details, padded with zero vectors.
-  - `mask`: a binary mask with ones at the padding token indexes.
+  - `prosody_indx`: indices for the prosody dimension.
+  - `zc1_indx`: indices for the primary content dimension.
+  - `zc2_indx`: indices for the secondary content dimension.
+  - `acoustic1_indx`: indices for the first set of acoustic details.
+  - `acoustic2_indx`: indices for the second set of acoustic details.
+  - `acoustic3_indx`: indices for the third set of acoustic details.
   
 - **create_phone_dataset.py**  
   Processes WAV files (and their corresponding transcript) to create forced alignment data that the model will use for conditioning. Here, the ASR model used is `wav2vec2-xlsr-53-espeak-cv-ft`, which produces phone outputs (IPA), so the ASR vocabulary size is 392.  
@@ -62,10 +64,12 @@ This repository provides the code for preparing datasets and training a non-auto
    python create_facodec_dataset.py
    ```
    Each WAV file will produce a `.pt` file containing a dictionary with:
-   - `content`
-   - `prosody`
-   - `acoustic`
-   - `mask`
+   - `prosody_indx`
+   - `zc1_indx`
+   - `zc2_indx`
+   - `acoustic1_indx`
+   - `acoustic2_indx`
+   - `acoustic3_indx`
 
 3. **Generate Phone Forced Alignment Data**  
    For phoneme conditioning, open `config.py` and adjust the paths or passes as needed. Then run:
