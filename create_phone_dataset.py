@@ -12,6 +12,8 @@ from transformers import (
 )
 from nemo_text_processing.text_normalization.normalize import Normalizer
 import re
+from phonemizer.separator import Separator
+from phonemizer.backend import EspeakBackend
 
 SCRIPT_LOCATION = os.environ.get("location")
 
@@ -32,8 +34,12 @@ def main():
 		"LANG_TAG": "<eng-us>: ",
 		"dev_g2p": "cuda" if torch.cuda.is_available() else "cpu",
 	}
-
-
+	# Initialize Espeak separator and backend here and add them to the pipeline.
+	sep = Separator(phone=" ", word="", syllable="")
+	backend = EspeakBackend('en-us')
+	pipeline["sep"] = sep
+	pipeline["backend"] = backend
+	
 	audio_folder = Config.wav_dir 
 	embeddings_folder = Config.facodec_dataset_dir 
 	output_folder = Config.phoneme_cond_dir 

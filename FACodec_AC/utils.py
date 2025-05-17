@@ -27,9 +27,6 @@ from FACodec_AC.config import Config
 
 SCRIPT_LOCATION = os.environ.get("location")
 
-sep = Separator(phone=" ", word="", syllable="")
-backend = EspeakBackend('en-us') 
-
 # This is just because delta cannot install espeak properly
 if SCRIPT_LOCATION == "server":
     # absolute path to the library you compiled
@@ -81,15 +78,9 @@ def greedy_split(token: str, vocab):
             idx += 1
     return splits
 
-def g2p(words, proc):
-	# tagged = [f"{pipeline['LANG_TAG']}{w}" for w in words]
-	# inputs = pipeline["g2p_tok"](tagged, padding=True, return_tensors="pt").to(pipeline["dev_g2p"])
-	# with torch.no_grad():
-	# 	out = pipeline["g2p_net"].generate(**inputs, num_beams=1, max_length=50)
-	# phones = pipeline["g2p_tok"].batch_decode(out, skip_special_tokens=True)
-	# tidy = [p.replace("ˈ", "").replace("ˌ", "").replace("▁", "").replace(" ", "") for p in phones]
-	# return " ".join(tidy)
-    phone_str = backend.phonemize(words, separator=sep, strip=True)
+def g2p(words, proc, sep, backend):
+	# Use the passed sep and backend instead of global ones.
+    phone_str    = backend.phonemize(words, separator=sep, strip=True)
     raw_seq      = phone_str[0].split()
 
         # 2) Load the target model’s phoneme vocab
@@ -114,7 +105,7 @@ def g2p(words, proc):
 def text2ids(raw_txt, pipeline, proc):
 	#ipa = g2p([clean(normalise(raw_txt, pipeline), pipeline)], pipeline)
 	#ids = tokenizer(ipa, add_special_tokens=False).input_ids
-    ids = g2p([clean(normalise(raw_txt, pipeline), pipeline)], proc)
+    ids = g2p([clean(normalise(raw_txt, pipeline), pipeline)], proc, pipeline['sep'], pipeline['backend'])
     return ids, None
 
 
