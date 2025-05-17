@@ -31,14 +31,11 @@ def main():
 	pipeline = {
 		"normaliser": Normalizer(lang="en", input_case="cased", deterministic=True, post_process=True),
 		"regex": re.compile(r"[^a-z' ]"),
-		"LANG_TAG": "<eng-us>: ",
-		"dev_g2p": "cuda" if torch.cuda.is_available() else "cpu",
+		"sep": Separator(phone=" ", word="|", syllable=""),
+		"backend": EspeakBackend('en-us'),
+		'wav2vec_processor': proc,
+		'wav2vec_model': model,
 	}
-	# Initialize Espeak separator and backend here and add them to the pipeline.
-	sep = Separator(phone=" ", word="", syllable="")
-	backend = EspeakBackend('en-us')
-	pipeline["sep"] = sep
-	pipeline["backend"] = backend
 	
 	audio_folder = Config.wav_dir 
 	embeddings_folder = Config.facodec_dataset_dir 
@@ -62,8 +59,6 @@ def main():
 					audio_folder,
 					transcript_metadata,
 					device,
-					model,
-					proc,
 					target_sr,
 					pipeline
 				)
@@ -87,8 +82,6 @@ def main():
 					audio_folder,
 					transcript_metadata,
 					device,
-					model,
-					proc,
 					target_sr,
 					pipeline 
 				)

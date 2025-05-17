@@ -32,7 +32,7 @@ if SCRIPT_LOCATION == "server":
     # absolute path to the library you compiled
     lib_path = "/u/yurii/.local/lib/libespeak-ng.so.1"
     # 1) let phonemizer know
-    EspeakWrapper.set_library(lib_path)          # python-only
+    EspeakWrapper.set_library(lib_path)  
     # 2) make sure the dynamic loader can also find it
     os.environ["LD_LIBRARY_PATH"] = (
         os.path.dirname(lib_path) + ":" + os.environ.get("LD_LIBRARY_PATH", "")
@@ -47,66 +47,26 @@ def clean(txt, pipeline):
 	txt = pipeline["regex"].sub(" ", txt)
 	return re.sub(r"\s+", " ", txt).strip()
 
-def greedy_split(token: str, vocab):
-    """
-    Split the given token into substrings found in the vocab using the longest possible prefix match.
-    If no match is found, the token is split into single characters.
+def g2p(words, pipeline):
+    phone_str    = pipeline['backend'].phonemize(words, separator=pipeline['sep'], strip=True)[0]
+    phone_str   = phone_str.replace("|", " ")
+    raw_seq      = phone_str.split()
 
-    This function is used only for get_phone_forced_alignment as the phonemizer sometimes returns merged phones.
 
-    Args:
-        token (str): The input token to be split.
-        vocab (iterable): Collection of valid substrings.
-
-    Returns:
-        list: A list of substrings (or individual characters) from the token.
-    """
-    splits = []
-    idx    = 0
-    L      = len(token)
-    while idx < L:
-        # Try longest possible match from the remaining string
-        for end in range(L, idx, -1):
-            piece = token[idx:end]
-            if piece in vocab:
-                splits.append(piece)
-                idx = end
-                break
-        else:
-            # No substring match—just emit the single character
-            splits.append(token[idx])
-            idx += 1
-    return splits
-
-def g2p(words, proc, sep, backend):
-	# Use the passed sep and backend instead of global ones.
-    phone_str    = backend.phonemize(words, separator=sep, strip=True)
-    raw_seq      = phone_str[0].split()
-
-        # 2) Load the target model’s phoneme vocab
-    model_vocab  = set(proc.tokenizer.get_vocab().keys())
-
-        # 3) Fix any invalid tokens
-    phone_seq = []
+    model_vocab  = set(pipeline['wav2vec_processor'].tokenizer.get_vocab().keys())
     for tok in raw_seq:
-        if tok in model_vocab:
-            phone_seq.append(tok)
-        else:
-            phone_seq.extend(greedy_split(tok, model_vocab))
+        if tok not in model_vocab:
+            print(f"Warning: {tok} not in vocab")
 
-    # 3) map phonemes → token IDs with the CTC tokenizer
-    #    any missing phonemes must be added or mapped to <unk>
-    vocab   = proc.tokenizer.get_vocab()
-    token_ids = [vocab.get(p, proc.tokenizer.unk_token_id) for p in phone_seq]
-    #token_ids = torch.tensor([token_ids], dtype=torch.int64, device=device)
+    # Map phonemes → token IDs with the CTC tokenizer
+    vocab   = pipeline['wav2vec_processor'].tokenizer.get_vocab()
+    token_ids = [vocab.get(p, pipeline['wav2vec_processor'].tokenizer.unk_token_id) for p in raw_seq]
     return token_ids
 
 
-def text2ids(raw_txt, pipeline, proc):
-	#ipa = g2p([clean(normalise(raw_txt, pipeline), pipeline)], pipeline)
-	#ids = tokenizer(ipa, add_special_tokens=False).input_ids
-    ids = g2p([clean(normalise(raw_txt, pipeline), pipeline)], proc, pipeline['sep'], pipeline['backend'])
-    return ids, None
+def text2ids(raw_txt, pipeline):
+    ids = g2p([clean(normalise(raw_txt, pipeline), pipeline)], pipeline)
+    return ids
 
 
 def pad_token_sequence(seq, target_len, pad_id):
@@ -120,10 +80,7 @@ def pad_token_sequence(seq, target_len, pad_id):
       padded_seq: tensor with the same shape as seq except the last dimension is target_len.
       mask: Boolean tensor of the same shape as padded_seq, where True indicates padded positions.
     """
-    # Determine sequence length from the last dimension.
     seq_len = seq.shape[-1]
-    
-    # Create shape for padded sequence: same as seq except last dimension = target_len.
     new_shape = list(seq.shape)
     new_shape[-1] = target_len
     
@@ -135,8 +92,6 @@ def pad_token_sequence(seq, target_len, pad_id):
     
     # Create mask with the same shape: padded positions marked as True.
     mask = torch.zeros(new_shape, dtype=torch.bool, device=seq.device)
-    
-    # Copy original values into padded_seq along the last dimension.
     indices = [slice(None)] * (seq.dim() - 1) + [slice(0, seq_len)]
     padded_seq[tuple(indices)] = seq
     
@@ -227,53 +182,56 @@ def load_transcript_metadata(transcript_file):
 
 
 
-def get_phone_forced_alignment(embedding_path, audio_folder, transcript_metadata, device, model, proc, target_sr, pipeline, inference=False):
-	num_zeros = 0
-	if not inference:
-		embedding = torch.load(embedding_path)
-		zc1_indx = embedding.get("zc1_indx", None)
-		if zc1_indx is None:
-			raise ValueError(f"No 'zc1_indx' key found in {embedding_path}")
-		num_zeros = zc1_indx.shape[1]
+def get_phone_forced_alignment(embedding_path, audio_folder, transcript_metadata, device, target_sr, pipeline, inference=False):
+    """
+    Performs forced alignment using a wav2vec model and a given audio file and transcript.
+    """
+    num_zeros = 0
+    if not inference:
+        embedding = torch.load(embedding_path)
+        zc1_indx = embedding.get("zc1_indx", None)
+        if zc1_indx is None:
+            raise ValueError(f"No 'zc1_indx' key found in {embedding_path}")
+        num_zeros = zc1_indx.shape[1]
 	
-	file_id = os.path.splitext(os.path.basename(embedding_path))[0]
-	
-	# --- Use text processing functions with pipeline ---
-	if file_id not in transcript_metadata:
-		raise ValueError(f"Transcript for {file_id} not found in transcript metadata.")
-	raw = transcript_metadata[file_id]
-	token_ids_list, ipa = text2ids(raw, pipeline, proc)
-	token_ids = torch.tensor([token_ids_list], dtype=torch.int64, device=device)
-	# --- End text processing ---
+    file_id = os.path.splitext(os.path.basename(embedding_path))[0]
 
-	# Load audio and perform forced alignment.
-	audio_path = os.path.join(audio_folder, f"{file_id}.wav")
-	if not os.path.exists(audio_path):
-		raise FileNotFoundError(f"Audio file not found: {audio_path}")
-	wav, sr = torchaudio.load(audio_path)
-	if sr != target_sr:
-		wav = torchaudio.functional.resample(wav, sr, target_sr)
-	with torch.inference_mode():
-		feats = proc.feature_extractor(wav.to(device).squeeze(0), sampling_rate=target_sr, return_tensors="pt")
-		feats = {k: v.to(device) for k, v in feats.items()}
-		logits = model(**feats).logits
-	logp = torch.log_softmax(logits, dim=-1)
-	
-	input_lens  = torch.tensor([logp.size(1)])
-	target_lens = torch.tensor([token_ids.size(1)])
-	blank_id    = 0  # CTC blank
-	
-	aligned_ids, frame_scores = forced_align(
-		logp,
-		token_ids,
-		input_lens,
-		target_lens,
-		blank=blank_id,
-	)
-	if not inference:
-		return aligned_ids, num_zeros
-	else:
-		return aligned_ids, num_zeros, frame_scores, logits
+    # --- Use text processing functions with pipeline ---
+    if file_id not in transcript_metadata:
+        raise ValueError(f"Transcript for {file_id} not found in transcript metadata.")
+    raw = transcript_metadata[file_id]
+    token_ids_list = text2ids(raw, pipeline)
+    token_ids = torch.tensor([token_ids_list], dtype=torch.int64, device=device)
+    # --- End text processing ---
+
+    # Load audio and perform forced alignment.
+    audio_path = os.path.join(audio_folder, f"{file_id}.wav")
+    if not os.path.exists(audio_path):
+        raise FileNotFoundError(f"Audio file not found: {audio_path}")
+    wav, sr = torchaudio.load(audio_path)
+    if sr != target_sr:
+        wav = torchaudio.functional.resample(wav, sr, target_sr)
+    with torch.inference_mode():
+        feats = pipeline['wav2vec_processor'].feature_extractor(wav.to(device).squeeze(0), sampling_rate=target_sr, return_tensors="pt")
+        feats = {k: v.to(device) for k, v in feats.items()}
+        logits = pipeline['wav2vec_model'](**feats).logits
+    logp = torch.log_softmax(logits, dim=-1)
+
+    input_lens  = torch.tensor([logp.size(1)])
+    target_lens = torch.tensor([token_ids.size(1)])
+    blank_id    = 0  # CTC blank
+
+    aligned_ids, frame_scores = forced_align(
+        logp,
+        token_ids,
+        input_lens,
+        target_lens,
+        blank=blank_id,
+    )
+    if not inference:
+        return aligned_ids, num_zeros
+    else:
+        return aligned_ids, num_zeros, frame_scores, logits
 
 class QuantizerNames(Enum):
     prosody = 0
@@ -440,3 +398,9 @@ def snap_latent(z, fa_decoder, layer: int = 1, quantizer_num: QuantizerNames = Q
     closest_idxs = torch.argmin(distances, dim=1)
     snapped = codebook[closest_idxs].view(B, T, D)
     return snapped
+
+def standardize(tensor, mean, std):
+    return (tensor - mean.view(1, -1, 1)) / std.view(1, -1, 1)
+
+def destandardize(tensor, mean, std):
+    return tensor * std.view(1, -1, 1) + mean.view(1, -1, 1)

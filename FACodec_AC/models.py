@@ -156,13 +156,11 @@ class DenoisingTransformerModel(nn.Module):
 
     def forward(self,
                 zc1_noisy: torch.Tensor,
-                zc1_ground_truth: torch.Tensor,
                 padded_phone_ids: torch.LongTensor,
                 noise_scaled: torch.Tensor,
                 padding_mask: torch.BoolTensor,
     ) -> tuple:
         zc1_noisy = zc1_noisy.transpose(1, 2)
-        zc1_ground_truth = zc1_ground_truth.transpose(1,2)
         bsz, seq_len =  zc1_noisy.shape[0], zc1_noisy.shape[1]
         device = zc1_noisy.device
         
@@ -179,7 +177,6 @@ class DenoisingTransformerModel(nn.Module):
         noise_cond = self.dropout_cond(self.noise_proj(noise_scaled))  # [B, T, 2*d_model]
         phone_cond = self.dropout_cond(self.phone_proj(phone_emb))       # [B, T, 2*d_model]
         cond = noise_cond + phone_cond
-        # t
         # Forward through encoder
         h = self.encoder(h, cond, src_key_padding_mask=padding_mask)
         
@@ -188,50 +185,6 @@ class DenoisingTransformerModel(nn.Module):
         
         # Predict zc2 by concatenating h and zc1_pred
         zc2_input = torch.cat([h, zc1_pred.detach()], dim=-1)
-        zc2_pred = self.fc_zc2(zc2_input)
-        
-        return zc1_pred.transpose(1, 2), zc2_pred.transpose(1, 2)
-
-    def inference(self,
-                  zc1_noisy: torch.Tensor,
-                  padded_phone_ids: torch.LongTensor,
-                  noise_scaled: torch.Tensor,
-                  padding_mask: torch.BoolTensor,
-                  fa_decoder  # pass the FACodecDecoder instance
-                  ) -> tuple:
-        """
-        Inference method similar to forward, but uses the snapped predicted zc1 instead of ground truth.
-        In inference we do not apply dropout on conditioning signals.
-        """
-        # Transpose input: [B, T, FACodec_dim]
-        zc1_noisy = zc1_noisy.transpose(1, 2)
-        bsz, seq_len = zc1_noisy.shape[0], zc1_noisy.shape[1]
-        device = zc1_noisy.device
-        pos_ids = torch.arange(seq_len, device=device).unsqueeze(0)
-        
-        # Projection and embeddings (no dropout applied here)
-        token_emb = self.proj_to_d_model(zc1_noisy)       # [B, T, d_model]
-        pos_emb   = self.pos_embedding(pos_ids)            # [1, T, d_model]
-        phone_emb = self.phone_embedding(padded_phone_ids)   # [B, T, d_model]
-        h = token_emb + pos_emb + phone_emb
-        
-        # Build conditioning without using dropout_cond
-        noise_cond = self.noise_proj(noise_scaled)           # [B, T, 2*d_model]
-        phone_cond = self.phone_proj(phone_emb)              # [B, T, 2*d_model]
-        cond = noise_cond + phone_cond
-        
-        # Forward through encoder with the given padding mask
-        h = self.encoder(h, cond, src_key_padding_mask=padding_mask)
-        
-        # zc1 prediction head
-        zc1_pred = self.fc_out(h)  # [B, T, FACodec_dim]
-        
-        # Snap predicted zc1 using the provided FACodecDecoder
-       
-        snapped_zc1 = snap_latent(zc1_pred, fa_decoder, layer=1, quantizer_num=QuantizerNames.content)
-        
-        # Predict zc2 by concatenating h and snapped zc1
-        zc2_input = torch.cat([h, snapped_zc1], dim=-1)
         zc2_pred = self.fc_zc2(zc2_input)
         
         return zc1_pred.transpose(1, 2), zc2_pred.transpose(1, 2)

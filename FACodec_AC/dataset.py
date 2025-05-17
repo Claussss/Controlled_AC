@@ -3,7 +3,7 @@ import glob
 import torch
 from torch.utils.data import Sampler, BatchSampler, Dataset
 from FACodec_AC.config import Config
-from FACodec_AC.utils import pad_token_sequence
+from FACodec_AC.utils import pad_token_sequence, standardize
 import random
 
 
@@ -64,8 +64,8 @@ class ZContentDataset(Dataset):
                 rep2 = emb2
         rep1 = rep1.transpose(1, 2)  # now shape: [1, d, T]
         rep2 = rep2.transpose(1, 2)
-        zc1_norm = (rep1 - self.mean_zc1.view(1, -1, 1)) / self.std_zc1.view(1, -1, 1)
-        zc2_norm = (rep2 - self.mean_zc2.view(1, -1, 1)) / self.std_zc2.view(1, -1, 1)
+        zc1_norm = standardize(rep1, self.mean_zc1, self.std_zc1)
+        zc2_norm = standardize(rep2, self.mean_zc2, self.std_zc2)
         cond_path = os.path.join(self.phones_cond_dir, os.path.basename(self.files[idx]))
         phone_cond = torch.load(cond_path)
         return zc1_norm, zc2_norm, phone_cond
