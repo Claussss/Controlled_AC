@@ -5,13 +5,13 @@ This repository provides the code for preparing datasets and training a non-auto
 ## Directory Structure
 
 - **create_facodec_dataset.py**  
-  Processes WAV files from an input folder (specified inside the script) and generates a `.pt` file for each WAV. Each file contains a dictionary with the following keys:
-  - `prosody_indx`: indices for the prosody dimension.
-  - `zc1_indx`: indices for the primary content dimension.
-  - `zc2_indx`: indices for the secondary content dimension.
-  - `acoustic1_indx`: indices for the first set of acoustic details.
-  - `acoustic2_indx`: indices for the second set of acoustic details.
-  - `acoustic3_indx`: indices for the third set of acoustic details.
+  Processes WAV files from an input folder and generates a `.pt` file for each WAV. Each file contains a dictionary with the following keys:
+  - `prosody_indx`: indices from the prosody quantizer codebook.
+  - `zc1_indx`: indices from the primary content quantizer (first-stage).
+  - `zc2_indx`: indices from the residual content quantizer (second-stage).
+  - `acoustic1_indx`: indices from the first acoustic residual quantizer.
+  - `acoustic2_indx`: indices from the second acoustic residual quantizer.
+  - `acoustic3_indx`: indices from the third acoustic residual quantizer.
   
 - **create_phone_dataset.py**  
   Processes WAV files (and their corresponding transcript) to create forced alignment data that the model will use for conditioning. Here, the ASR model used is `wav2vec2-xlsr-53-espeak-cv-ft`, which produces phone outputs (IPA), so the ASR vocabulary size is 392.  
