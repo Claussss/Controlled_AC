@@ -174,7 +174,7 @@ class DenoisingTransformerModel(nn.Module):
         noise_cond = self.dropout_cond(self.noise_proj(noise_scaled))  # [B, T, 2*d_model]
         phone_cond = self.dropout_cond(self.phone_proj(phone_emb))       # [B, T, 2*d_model]
         cond = noise_cond + phone_cond
-        
+        # t
         # Forward through encoder
         h = self.encoder(h, cond, src_key_padding_mask=padding_mask)
         
