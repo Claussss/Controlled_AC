@@ -1,22 +1,28 @@
 import os
+import sys
 import glob
+
 import torch
 import torchaudio
-from concurrent.futures import ProcessPoolExecutor, as_completed
-import tqdm
-from FACodec_AC.config import Config, ASRConfig
-import csv
-import random
-import string
-import torch.nn.functional as F
-from einops import rearrange
 from torchaudio.functional import forced_align
+import torch.nn.functional as F
+
+import csv
+from einops import rearrange
 import re
-from num2words import num2words
+from enum import Enum
+
 from phonemizer import phonemize
 from phonemizer.separator import Separator
 from phonemizer.backend.espeak.wrapper import EspeakWrapper
-from enum import Enum
+
+
+from huggingface_hub import hf_hub_download
+sys.path.append(os.path.join(os.path.dirname(__file__), '..', '..', 'Amphion'))
+from models.codec.ns3_codec import FACodecEncoder, FACodecDecoder
+
+from FACodec_AC.config import Config
+
 SCRIPT_LOCATION = os.environ.get("location")
 
 sep = Separator(phone=" ", word="", syllable="")
@@ -169,24 +175,15 @@ def interpolate_alignment(predicted_ids, num_zeros, mode='nearest'):
 
 def process_wav_facodec(filepath, fa_encoder, fa_decoder, out_dir, device):
     """
-    Processes an audio file using the FACODec to extract and pad zc1, zc2, prosody, and acoustic features.
-    Specifically, it extracts:
-        - zc1 tokens (from vq_id[1]), along with a corresponding padding mask,
-        - zc2 tokens (from vq_id[2]),
-        - a prosody vector (from quantized_arr[0]), and
-        - an acoustic vector (from quantized_arr[2]).
-    Each of these components is padded to a fixed maximum sequence length using a provided padding function.
-    Finally, the function saves the padded tokens, mask, prosody, and acoustic vectors as a PyTorch file in the specified output directory.
-
-    Parameters:
-            filepath (str): The path to the input WAV audio file.
-            fa_encoder (Callable): The FACODec encoder model function to process the audio waveform.
-            fa_decoder (Callable): The FACODec decoder model function to extract latent features.
-            out_dir (str): The directory path where the processed output will be saved.
-            device (torch.device or str): The device on which the processing will be performed.
-
-    Returns:
-            tuple: A tuple containing the input filepath, a status string ("success" if processing and saving completed successfully; otherwise, an error message indicating the failure reason), and the standard deviations of content and prosody vectors.
+    Processes an audio file using the FACODec to extract indices.
+    Saves:
+        - prosody_indx: vq_id[0],
+        - zc1_indx: vq_id[1],
+        - zc2_indx: vq_id[2],
+        - acoustic1_indx: vq_id[3],
+        - acoustic2_indx: vq_id[4],
+        - acoustic3_indx: vq_id[5]
+    without any padding.
     """
     try:
         wav_waveform, wav_sr = torchaudio.load(filepath)
@@ -196,38 +193,27 @@ def process_wav_facodec(filepath, fa_encoder, fa_decoder, out_dir, device):
         wav_waveform = wav_waveform.to(device)
         with torch.no_grad():
             h_input = fa_encoder(wav_waveform[None, :, :])
-            _, vq_id, _, quantized_arr, _ = fa_decoder(h_input, eval_vq=False, vq=True)
-        _, mask = pad_token_sequence(vq_id[1], Config.max_seq_len, Config.PAD_ID)
-        # Process zc1 and zc2 instead of content_vector
-        zc1_vector = get_z_from_indx(h_input, torch.zeros(vq_id[1].shape[1], dtype=torch.long), fa_decoder, layer=0)
-        zc1_vector = pad_token_sequence(zc1_vector, Config.max_seq_len, Config.PAD_ID)[0]
-        zc2_vector = get_z_from_indx(h_input, torch.zeros(vq_id[2].shape[1], dtype=torch.long), fa_decoder, layer=1)
-        zc2_vector = pad_token_sequence(zc2_vector, Config.max_seq_len, Config.PAD_ID)[0]
-        #prosody_vector, _ = pad_token_sequence(quantized_arr[0], Config.max_seq_len, Config.PAD_ID)
-        #acoustic_vector, _ = pad_token_sequence(quantized_arr[2], Config.max_seq_len, Config.PAD_ID)
+            _, vq_id, _, _, _ = fa_decoder(h_input, eval_vq=False, vq=True)
+        # Extract indices directly (assumes vq_id has at least six elements)
+        prosody_indx   = vq_id[0].cpu()
+        zc1_indx       = vq_id[1].cpu()
+        zc2_indx       = vq_id[2].cpu()
+        acoustic1_indx = vq_id[3].cpu()
+        acoustic2_indx = vq_id[4].cpu()
+        acoustic3_indx = vq_id[5].cpu()
         base = os.path.splitext(os.path.basename(filepath))[0]
-        torch.save({'zc1': zc1_vector, 'zc2': zc2_vector, 'mask': mask},
-                   os.path.join(out_dir, f"{base}.pt"))
-        # Compute per-dimension std (unbiased) for each tensor (each std is 256-dim)
-        std_zc1    = torch.std(zc1_vector.float(), dim=1, unbiased=True)
-        std_zc2    = torch.std(zc2_vector.float(), dim=1, unbiased=True)
-        std_prosody= 0.0#torch.std(prosody_vector.float(), dim=1, unbiased=True)
-        # Compute running aggregates per channel and move them to CPU
-        sum_zc1   = zc1_vector.float().sum(dim=1).cpu()           # shape [256]
-        sumsq_zc1 = (zc1_vector.float() ** 2).sum(dim=1).cpu()      # shape [256]
-        count_zc1 = zc1_vector.size(1)                              # scalar (same for all channels)
-        sum_zc2   = zc2_vector.float().sum(dim=1).cpu()
-        sumsq_zc2 = (zc2_vector.float() ** 2).sum(dim=1).cpu()
-        count_zc2 = zc2_vector.size(1)
-        sum_prosody   = 0.0#prosody_vector.float().sum(dim=1).cpu()
-        sumsq_prosody = 0.0#(prosody_vector.float() ** 2).sum(dim=1).cpu()
-        count_prosody = 0.0#prosody_vector.size(1)
-        return (filepath, "success", std_zc1, std_zc2, std_prosody,
-                sum_zc1, sumsq_zc1, count_zc1,
-                sum_zc2, sumsq_zc2, count_zc2,
-                sum_prosody, sumsq_prosody, count_prosody)
+        torch.save({
+            "prosody_indx": prosody_indx,
+            "zc1_indx": zc1_indx,
+            "zc2_indx": zc2_indx,
+            "acoustic1_indx": acoustic1_indx,
+            "acoustic2_indx": acoustic2_indx,
+            "acoustic3_indx": acoustic3_indx
+        }, os.path.join(out_dir, f"{base}.pt"))
+        return filepath, "success"
     except Exception as e:
         return filepath, f"error: {str(e)}"
+
 
 def load_transcript_metadata(transcript_file):
     """
@@ -252,10 +238,10 @@ def get_phone_forced_alignment(embedding_path, audio_folder, transcript_metadata
 	num_zeros = 0
 	if not inference:
 		embedding = torch.load(embedding_path)
-		mask = embedding.get("mask", None)
-		if mask is None:
-			raise ValueError(f"No 'mask' key found in {embedding_path}")
-		num_zeros = int((mask == 0).sum().item())
+		zc1_indx = embedding.get("zc1_indx", None)
+		if zc1_indx is None:
+			raise ValueError(f"No 'zc1_indx' key found in {embedding_path}")
+		num_zeros = zc1_indx.shape[1]
 	
 	file_id = os.path.splitext(os.path.basename(embedding_path))[0]
 	
@@ -292,7 +278,7 @@ def get_phone_forced_alignment(embedding_path, audio_folder, transcript_metadata
 		blank=blank_id,
 	)
 	if not inference:
-		return aligned_ids, num_zeros, frame_scores,
+		return aligned_ids, num_zeros
 	else:
 		return aligned_ids, num_zeros, frame_scores, logits
 
@@ -301,27 +287,163 @@ class QuantizerNames(Enum):
     content = 1
     acoustic = 2
 
-def get_z_from_indx(tokens, mask, fa_decoder, layer=0, quantizer_num=QuantizerNames.content):
+def get_z_from_indx(tokens, fa_decoder, layer=0, quantizer_num=QuantizerNames.content, dim=256):
     """
-    Convert token indexes to continuous zc1 representations.
+    Convert token indexes to z representations (content, prosody, or acoustic).
     
     tokens: LongTensor of shape [B, T] (pad token = 1025)
-    mask: BooleanTensor of shape [B, T] where True indicates padding.
-    layer: int, 0 for zc1 1 for zc2. Prosody has only 1 layer, content 2, acoustic 3.
-    
-    Replaces pad tokens with 0, embeds tokens via the codebook and projection,
-    then zeros out the padded positions.
+    layer: int. Prosody has only 1 layer, content 2, acoustic 3.
     """
-    tokens_mod = tokens.clone()
-    #tokens_mod[:,mask] = 0
     with torch.no_grad():
         quantizer_index = quantizer_num.value
-        #z_c1 = fa_decoder.quantizer[quantizer_index].layers[layer].in_proj(tokens.transpose(1,2))  
-        # Get codebook from the FACodec decoder.
         codebook = fa_decoder.quantizer[quantizer_index].layers[layer].codebook.weight  # [num_codes, code_dim]
-        z_c1 = torch.nn.functional.embedding(tokens_mod, codebook)     # [B, T, code_dim]
-        #z_c1 = fa_decoder.quantizer[quantizer_index].layers[layer].out_proj(e_q)          # [B, T, 256]
-    #pad_mask = mask.unsqueeze(-1).expand_as(z_c1)
-    #z_c1[pad_mask] = 0
+        z_c1 = torch.nn.functional.embedding(tokens, codebook)     # [B, T, code_dim]
+        if dim==256:
+            z_c1 = fa_decoder.quantizer[quantizer_index].layers[layer].out_proj(z_c1)          # [B, T, 256]
     z_c1 = rearrange(z_c1, "b t d -> b d t")
     return z_c1
+
+
+def compute_stats(dataset_dir, stats_dir, fa_decoder):
+    """
+    Computes channel-wise mean and std for each variable over all .pt files in dataset_dir.
+    For each file, loads the index, converts it to its continuous representation using get_z_from_indx,
+    and accumulates sums and sum of squares channel-wise.
+    Uses different layer and quantizer arguments according to the key:
+      - 'prosody_indx': layer=0, quantizer=QuantizerNames.prosody
+      - 'zc1_indx': layer=0, quantizer=QuantizerNames.content
+      - 'zc2_indx': layer=1, quantizer=QuantizerNames.content
+      - 'acoustic1_indx': layer=0, quantizer=QuantizerNames.acoustic
+      - 'acoustic2_indx': layer=1, quantizer=QuantizerNames.acoustic
+      - 'acoustic3_indx': layer=2, quantizer=QuantizerNames.acoustic
+    Saves the per-channel mean and std for each key in stats_dir as torch tensors and returns the stats.
+    """
+    # Initialize dictionaries to accumulate per-channel sums, sumsq and counts (each will be a tensor)
+    sums = {}
+    sumsqs = {}
+    counts = {}
+    keys = ["prosody_indx", "zc1_indx", "zc2_indx", "acoustic1_indx", "acoustic2_indx", "acoustic3_indx"]
+
+    # For each key, we will initialize the accumulation tensors when we first see a file
+    pt_files = glob.glob(os.path.join(dataset_dir, "*.pt"))
+    for pt in pt_files:
+        try:
+            data = torch.load(pt)
+        except Exception as e:
+            print(f"Error loading {pt}: {e} -- skipping.")
+            continue
+
+        for k in keys:
+            if k in data:
+                # Determine layer and quantizer based on the key
+                if k == "prosody_indx":
+                    layer = 0
+                    quant = QuantizerNames.prosody
+                elif k == "zc1_indx":
+                    layer = 0
+                    quant = QuantizerNames.content
+                elif k == "zc2_indx":
+                    layer = 1
+                    quant = QuantizerNames.content
+                elif k == "acoustic1_indx":
+                    layer = 0
+                    quant = QuantizerNames.acoustic
+                elif k == "acoustic2_indx":
+                    layer = 1
+                    quant = QuantizerNames.acoustic
+                elif k == "acoustic3_indx":
+                    layer = 2
+                    quant = QuantizerNames.acoustic
+
+                # Convert indices to continuous representations using get_z_from_indx
+                # Each stored tensor is of shape [1, T]
+                indices = data[k]
+                rep = get_z_from_indx(indices, fa_decoder, layer=layer, quantizer_num=quant, dim=Config.FACodec_dim).cpu()  
+                # rep has shape [B, d, T], B==1
+                rep = rep.squeeze(0)  # now shape [d, T]
+
+                # Initialize accumulation tensors if not exist
+                if k not in sums:
+                    d = rep.size(0)  # number of channels
+                    sums[k] = torch.zeros(d, dtype=torch.float64)
+                    sumsqs[k] = torch.zeros(d, dtype=torch.float64)
+                    counts[k] = torch.zeros(d, dtype=torch.float64)
+
+                # Accumulate sums over time dimension for each channel
+                sums[k] += rep.sum(dim=1).double()
+                sumsqs[k] += (rep ** 2).sum(dim=1).double()
+                counts[k] += rep.size(1)
+
+    means = {}
+    stds = {}
+    for k in keys:
+        if k in counts and torch.all(counts[k] > 0):
+            mean = sums[k] / counts[k]
+            # Compute unbiased sample variance channel-wise
+            variance = (sumsqs[k] - counts[k] * (mean ** 2)) / (counts[k] - 1)
+            std = torch.sqrt(variance)
+            means[k] = mean
+            stds[k] = std
+            torch.save(mean.float(), os.path.join(stats_dir, f"mean_{k}.pt"))
+            torch.save(std.float(), os.path.join(stats_dir, f"std_{k}.pt"))
+    return means, stds
+
+def init_facodec_models(device):
+    """
+    Initializes FACodec encoder and decoder, loads checkpoints,
+    and returns them.
+    """
+
+    # Initialize FACCodec models
+    fa_encoder = FACodecEncoder(ngf=32, up_ratios=[2,4,5,5], out_channels=256)
+    fa_decoder = FACodecDecoder(
+        in_channels=256,
+        upsample_initial_channel=1024,
+        ngf=32,
+        up_ratios=[5,5,4,2],
+        vq_num_q_c=2,
+        vq_num_q_p=1,
+        vq_num_q_r=3,
+        vq_dim=256,
+        codebook_dim=8,
+        codebook_size_prosody=10,
+        codebook_size_content=10,
+        codebook_size_residual=10,
+        use_gr_x_timbre=True,
+        use_gr_residual_f0=True,
+        use_gr_residual_phone=True,
+    )
+    encoder_ckpt = hf_hub_download(repo_id="amphion/naturalspeech3_facodec", filename="ns3_facodec_encoder.bin")
+    decoder_ckpt = hf_hub_download(repo_id="amphion/naturalspeech3_facodec", filename="ns3_facodec_decoder.bin")
+    fa_encoder.load_state_dict(torch.load(encoder_ckpt))
+    fa_decoder.load_state_dict(torch.load(decoder_ckpt))
+    fa_encoder.eval()
+    fa_decoder.eval()
+
+    fa_encoder = fa_encoder.to(device)
+    fa_decoder = fa_decoder.to(device)
+    
+    return fa_encoder, fa_decoder
+
+def snap_latent(z, fa_decoder, layer: int = 1, quantizer_num: QuantizerNames = QuantizerNames.content):
+    """
+    For a given latent tensor z of shape [B, T, D],
+    replaces each latent vector with its closest codebook vector 
+    from the specified layer (default layer 1) of the quantizer specified by quantizer_num (default content).
+
+    Parameters:
+        z (torch.Tensor): Latent tensor with shape [B, T, D].
+        fa_decoder: Instance of FACodecDecoder.
+        layer (int): Layer index to use (default is 1).
+        quantizer_num (QuantizerNames): Quantizer to use (default is QuantizerNames.content).
+
+    Returns:
+        torch.Tensor: Snapped latent tensor with shape [B, T, D].
+    """
+    codebook = fa_decoder.quantizer[quantizer_num.value].layers[layer].codebook.weight
+    B, T, D = z.shape
+    z_flat = z.view(-1, D)
+    distances = torch.cdist(z_flat, codebook, p=2)
+    closest_idxs = torch.argmin(distances, dim=1)
+    snapped = codebook[closest_idxs].view(B, T, D)
+    return snapped

@@ -1,12 +1,6 @@
-import math
-import os
-import random
 import torch
 import torch.nn as nn
-import torch.nn.functional as F
-import torch.optim as optim
-from FACodec_AC.config import Config, ASRConfig
-
+from FACodec_AC.utils import snap_latent, QuantizerNames
 
 class ConvFeedForward(nn.Module):
     """
@@ -122,83 +116,55 @@ class CustomTransformerEncoder(nn.Module):
             x = layer(x, cond, src_key_padding_mask=src_key_padding_mask)
         return x
 
-class DiffusionTransformerModel(nn.Module):
-    """        
-    Parameters:
-        pretrained_codebook (nn.Embedding): FACodec Embedding of 1024 codes (dim 8) for input indices.
-        pretrained_proj_layer (nn.Module): Projects codebook vectors from 8D to 256D for model and FACodec decoder.
-        std_file_path (str): Path to tensor with standard deviations for FACodec content embeddings.
-        vocab_size (int, optional): Vocabulary size (default: 1024).
-    """
+class DenoisingTransformerModel(nn.Module):
     def __init__(
         self,
-        std_file_path: str,
         d_model: int = 1024,
         nhead: int = 8,
         num_layers: int = 12,
         d_ff: int = 2048,
         dropout: float = 0.1,
-        max_seq_len: int = 4096
+        max_seq_len: int = 807,
+        FACodec_dim: int = 8,
+        phone_vocab_size: int = 392
     ):
         super().__init__()
         self.d_model = d_model
 
-        # Input feature dim is fixed as 256 (removed self.proj_to_256)
-        self.proj_to_d_model = nn.Linear(8, d_model)
-
-        # positional embeddings
+        self.proj_to_d_model = nn.Linear(FACodec_dim, d_model)
         self.pos_embedding = nn.Embedding(max_seq_len, d_model)
+        self.encoder = CustomTransformerEncoder(num_layers, d_model, nhead, d_ff, dropout)
+        self.fc_out = nn.Linear(d_model, FACodec_dim)
+        # fc_zc2 head, concatenating encoder output h and zc1 prediction
+        self.fc_zc2 = nn.Linear(d_model + FACodec_dim, FACodec_dim)
 
-        # conditional FiLM MLP: input [mask_bit, noise_level] (old branch, unused now)
-        self.cond_mlp = nn.Sequential(
-            nn.Linear(2, d_model * 2),
-            nn.ReLU(),
-        )
-
-        # prosody conditioning projection
-        self.prosody_proj = nn.Linear(256, d_model * 2)
 
         # phone conditioning
-        self.phone_embedding = nn.Embedding(ASRConfig.VOCAB_SIZE + 1, d_model)
+        self.phone_embedding = nn.Embedding(phone_vocab_size + 1, d_model)
         self.phone_proj = nn.Linear(d_model, d_model * 2)
+        # Add noise_proj to process noise_scaled as conditioning input
+        self.noise_proj = nn.Linear(FACodec_dim, d_model * 2)
 
         # Extra dropout for conditioning signals
         self.dropout_cond = nn.Dropout(0.1)
 
-        # encoder & output; output feature dim is now 256
-        self.encoder = CustomTransformerEncoder(num_layers, d_model, nhead, d_ff, dropout)
-        feature_dim = 8
-        self.fc_out = nn.Linear(d_model, feature_dim)
-
-        # NEW: Add noise_proj to process noise_scaled as conditioning input
-        self.noise_proj = nn.Linear(feature_dim, d_model * 2)
-
-        # NEW: fc_zc2 head, concatenating encoder output h and zc1 prediction
-        self.fc_zc2 = nn.Linear(d_model + feature_dim, feature_dim)
-
-        # load std
-        self.register_buffer("precomputed_std", torch.load(std_file_path))
 
     def forward(self,
-                x: torch.Tensor,  # x is always continuous with dim 256,
+                zc1_noisy: torch.Tensor,
                 zc1_ground_truth: torch.Tensor,
                 padded_phone_ids: torch.LongTensor,
                 noise_scaled: torch.Tensor,
-                padding_mask: torch.BoolTensor = None,
-                prosody_cond: torch.Tensor = None  
+                padding_mask: torch.BoolTensor,
     ) -> tuple:
-        x = x.transpose(1, 2)
-        bsz, seq_len = x.size() if x.dim() == 2 else (x.shape[0], x.shape[1])
-        device = x.device
+        zc1_noisy = zc1_noisy.transpose(1, 2)
+        zc1_ground_truth = zc1_ground_truth.transpose(1,2)
+        bsz, seq_len =  zc1_noisy.shape[0], zc1_noisy.shape[1]
+        device = zc1_noisy.device
         
-        # position IDs
-        pos_ids = torch.arange(seq_len, device=device).unsqueeze(0)
-        
-        # Use continuous input x directly (dim=256)
-        code_up = x
-        
+
+        pos_ids = torch.arange(seq_len, device=device).unsqueeze(0)        
         # Project to model dimension and add positional & phone embeddings
-        token_emb = self.proj_to_d_model(code_up)      # [B, T, D]
+        token_emb = self.proj_to_d_model(zc1_noisy)      # [B, T, D]
         pos_emb   = self.pos_embedding(pos_ids)         # [1, T, D]
         phone_emb = self.phone_embedding(padded_phone_ids)
         phone_emb = self.dropout_cond(phone_emb)
@@ -208,9 +174,6 @@ class DiffusionTransformerModel(nn.Module):
         noise_cond = self.dropout_cond(self.noise_proj(noise_scaled))  # [B, T, 2*d_model]
         phone_cond = self.dropout_cond(self.phone_proj(phone_emb))       # [B, T, 2*d_model]
         cond = noise_cond + phone_cond
-        if prosody_cond is not None:
-            prosody_repr = self.dropout_cond(self.prosody_proj(prosody_cond.transpose(1, 2)))
-            cond += prosody_repr
         
         # Forward through encoder
         h = self.encoder(h, cond, src_key_padding_mask=padding_mask)
@@ -218,10 +181,54 @@ class DiffusionTransformerModel(nn.Module):
         # zc1 prediction head
         zc1_pred = self.fc_out(h)
         
-        # NEW: predict zc2 by concatenating h and zc1_pred
-        zc2_input = torch.cat([h, zc1_pred], dim=-1)
+        # Predict zc2 by concatenating h and zc1_pred
+        zc2_input = torch.cat([h, zc1_ground_truth], dim=-1)
         zc2_pred = self.fc_zc2(zc2_input)
         
-        return zc1_pred, zc2_pred
+        return zc1_pred.transpose(1, 2), zc2_pred.transpose(1, 2)
+
+    def inference(self,
+                  zc1_noisy: torch.Tensor,
+                  padded_phone_ids: torch.LongTensor,
+                  noise_scaled: torch.Tensor,
+                  padding_mask: torch.BoolTensor,
+                  fa_decoder  # pass the FACodecDecoder instance
+                  ) -> tuple:
+        """
+        Inference method similar to forward, but uses the snapped predicted zc1 instead of ground truth.
+        In inference we do not apply dropout on conditioning signals.
+        """
+        # Transpose input: [B, T, FACodec_dim]
+        zc1_noisy = zc1_noisy.transpose(1, 2)
+        bsz, seq_len = zc1_noisy.shape[0], zc1_noisy.shape[1]
+        device = zc1_noisy.device
+        pos_ids = torch.arange(seq_len, device=device).unsqueeze(0)
+        
+        # Projection and embeddings (no dropout applied here)
+        token_emb = self.proj_to_d_model(zc1_noisy)       # [B, T, d_model]
+        pos_emb   = self.pos_embedding(pos_ids)            # [1, T, d_model]
+        phone_emb = self.phone_embedding(padded_phone_ids)   # [B, T, d_model]
+        h = token_emb + pos_emb + phone_emb
+        
+        # Build conditioning without using dropout_cond
+        noise_cond = self.noise_proj(noise_scaled)           # [B, T, 2*d_model]
+        phone_cond = self.phone_proj(phone_emb)              # [B, T, 2*d_model]
+        cond = noise_cond + phone_cond
+        
+        # Forward through encoder with the given padding mask
+        h = self.encoder(h, cond, src_key_padding_mask=padding_mask)
+        
+        # zc1 prediction head
+        zc1_pred = self.fc_out(h)  # [B, T, FACodec_dim]
+        
+        # Snap predicted zc1 using the provided FACodecDecoder
+       
+        snapped_zc1 = snap_latent(zc1_pred, fa_decoder, layer=1, quantizer_num=QuantizerNames.content)
+        
+        # Predict zc2 by concatenating h and snapped zc1
+        zc2_input = torch.cat([h, snapped_zc1], dim=-1)
+        zc2_pred = self.fc_zc2(zc2_input)
+        
+        return zc1_pred.transpose(1, 2), zc2_pred.transpose(1, 2)
 
 

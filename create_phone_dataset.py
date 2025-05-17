@@ -1,17 +1,14 @@
 import os
 import csv
 import torch
-import torchaudio
 import tqdm
-from FACodec_AC.config import Config, ASRConfig
+from FACodec_AC.config import Config
 from FACodec_AC.utils import load_transcript_metadata, get_phone_forced_alignment, interpolate_alignment, pad_token_sequence
 from transformers import (
 	Wav2Vec2FeatureExtractor,
 	Wav2Vec2CTCTokenizer,
 	Wav2Vec2Processor,
 	Wav2Vec2ForCTC,
-	AutoTokenizer,
-	T5ForConditionalGeneration,
 )
 from nemo_text_processing.text_normalization.normalize import Normalizer
 import re
@@ -34,15 +31,13 @@ def main():
 		"regex": re.compile(r"[^a-z' ]"),
 		"LANG_TAG": "<eng-us>: ",
 		"dev_g2p": "cuda" if torch.cuda.is_available() else "cpu",
-		#"g2p_tok": AutoTokenizer.from_pretrained("google/byt5-small"),
-		#"g2p_net": T5ForConditionalGeneration.from_pretrained("charsiu/g2p_multilingual_byT5_tiny_16_layers_100").to(device).eval()
 	}
 
 
 	audio_folder = Config.wav_dir 
 	embeddings_folder = Config.facodec_dataset_dir 
 	output_folder = Config.phoneme_cond_dir 
-	transcript_file = ASRConfig.metadata_path
+	transcript_file = Config.transcription_file
 
 	# Load transcript metadata.
 	transcript_metadata = load_transcript_metadata(transcript_file)
@@ -56,7 +51,7 @@ def main():
 		if file.endswith(".pt"):
 			embedding_path = os.path.join(train_embeddings_folder, file)
 			try:
-				predicted_ids, num_zeros, _ = get_phone_forced_alignment(
+				predicted_ids, num_zeros = get_phone_forced_alignment(
 					embedding_path,
 					audio_folder,
 					transcript_metadata,
@@ -64,12 +59,11 @@ def main():
 					model,
 					proc,
 					target_sr,
-					pipeline  # pass pipeline here
+					pipeline
 				)
 				interpolated_phone_ids = interpolate_alignment(predicted_ids, num_zeros)
-				padded_phone_ids, pad_mask = pad_token_sequence(interpolated_phone_ids, Config.max_seq_len, ASRConfig.PAD_ID)
 				output_path = os.path.join(output_train_folder, file)
-				torch.save(padded_phone_ids, output_path)
+				torch.save(interpolated_phone_ids.cpu()[0], output_path)
 			except Exception as e:
 				print(f"Error processing {file}: {e}")
 
@@ -82,7 +76,7 @@ def main():
 		if file.endswith(".pt"):
 			embedding_path = os.path.join(test_embeddings_folder, file)
 			try:
-				predicted_ids, num_zeros, _ = get_phone_forced_alignment(
+				predicted_ids, num_zeros = get_phone_forced_alignment(
 					embedding_path,
 					audio_folder,
 					transcript_metadata,
@@ -90,12 +84,11 @@ def main():
 					model,
 					proc,
 					target_sr,
-					pipeline  # pass pipeline here
+					pipeline 
 				)
 				interpolated_phone_ids = interpolate_alignment(predicted_ids, num_zeros)
-				padded_phone_ids, pad_mask = pad_token_sequence(interpolated_phone_ids, Config.max_seq_len, ASRConfig.PAD_ID)
 				output_path = os.path.join(output_test_folder, file)
-				torch.save(padded_phone_ids, output_path)
+				torch.save(interpolated_phone_ids.cpu()[0], output_path)
 			except Exception as e:
 				print(f"Error processing {file}: {e}")
 
