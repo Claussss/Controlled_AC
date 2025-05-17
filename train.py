@@ -118,7 +118,7 @@ def main():
             
             loss_zc1 = F.mse_loss(zc1_pred, x0)
             loss_zc2 = F.mse_loss(zc2_pred, zc2)
-            loss = loss_zc1 + loss_zc2
+            loss = loss_zc1 + 0.5*loss_zc2
             loss.backward()
             optimizer.step()
             scheduler.step()
@@ -164,7 +164,7 @@ def main():
                     )
                     loss_zc1 = F.mse_loss(zc1_pred, x0)
                     loss_zc2 = F.mse_loss(zc2_pred, zc2_val)
-                    total_test_loss += (loss_zc1.item() + loss_zc2.item())
+                    total_test_loss += (loss_zc1.item() + 0.5*loss_zc2.item())
                     total_test_loss_zc1 += loss_zc1.item()
                     total_test_loss_zc2 += loss_zc2.item()
                     test_batches += 1

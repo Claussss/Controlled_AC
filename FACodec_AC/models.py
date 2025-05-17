@@ -136,7 +136,12 @@ class DenoisingTransformerModel(nn.Module):
         self.encoder = CustomTransformerEncoder(num_layers, d_model, nhead, d_ff, dropout)
         self.fc_out = nn.Linear(d_model, FACodec_dim)
         # fc_zc2 head, concatenating encoder output h and zc1 prediction
-        self.fc_zc2 = nn.Linear(d_model + FACodec_dim, FACodec_dim)
+        #self.fc_zc2 = nn.Linear(d_model + FACodec_dim, FACodec_dim)
+        self.fc_zc2 = nn.Sequential(
+                            nn.Linear(d_model + FACodec_dim, 4 * FACodec_dim),
+                            nn.GELU(),
+                            nn.Linear(4 * FACodec_dim, FACodec_dim)
+                        )
 
 
         # phone conditioning
@@ -182,7 +187,7 @@ class DenoisingTransformerModel(nn.Module):
         zc1_pred = self.fc_out(h)
         
         # Predict zc2 by concatenating h and zc1_pred
-        zc2_input = torch.cat([h, zc1_ground_truth], dim=-1)
+        zc2_input = torch.cat([h, zc1_pred.detach()], dim=-1)
         zc2_pred = self.fc_zc2(zc2_input)
         
         return zc1_pred.transpose(1, 2), zc2_pred.transpose(1, 2)
