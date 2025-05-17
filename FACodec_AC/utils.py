@@ -51,6 +51,7 @@ def g2p(words, pipeline):
     phone_str    = pipeline['backend'].phonemize(words, separator=pipeline['sep'], strip=True)[0]
     phone_str   = phone_str.replace("|", " ")
     raw_seq      = phone_str.split()
+    raw_seq = [pipeline['DROP_RE'].sub('', t) for t in raw_seq]
 
 
     model_vocab  = set(pipeline['wav2vec_processor'].tokenizer.get_vocab().keys())

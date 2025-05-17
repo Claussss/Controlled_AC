@@ -110,7 +110,6 @@ def main():
             
             zc1_pred, zc2_pred = model(
                 zc1_noisy=x_noisy,
-                zc1_ground_truth=x0,
                 padded_phone_ids=padded_phone_ids,
                 noise_scaled=noise_scaled,
                 padding_mask=padding_mask
@@ -157,7 +156,6 @@ def main():
 
                     zc1_pred, zc2_pred = model(
                         zc1_noisy=x_noisy,
-                        zc1_ground_truth=x0,
                         padded_phone_ids=padded_phone_ids,
                         noise_scaled=noise_scaled,
                         padding_mask=padding_mask

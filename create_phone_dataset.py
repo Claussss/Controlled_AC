@@ -28,6 +28,16 @@ def main():
 	target_sr = fe.sampling_rate  # typically 16000
 
 	# Initialize heavy pipeline objects once.
+	REMOVE = ''.join([
+    'ʲ',  # palatalization
+    'ʷ',  # labialization
+    'ʰ',  # aspirated
+    'ʱ',  # breathy
+    'ˠ',  # velarized
+    'ˤ',  # pharyngealized
+    'ʶ',  # uvularized
+    'ʵ',  # palatalized retroflex, etc.
+	])
 	pipeline = {
 		"normaliser": Normalizer(lang="en", input_case="cased", deterministic=True, post_process=True),
 		"regex": re.compile(r"[^a-z' ]"),
@@ -35,6 +45,7 @@ def main():
 		"backend": EspeakBackend('en-us'),
 		'wav2vec_processor': proc,
 		'wav2vec_model': model,
+		'DROP_RE': re.compile('[%s]' % re.escape(REMOVE))
 	}
 	
 	audio_folder = Config.wav_dir 
