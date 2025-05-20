@@ -5,6 +5,7 @@ from torch.utils.data import Sampler, BatchSampler, Dataset
 from FACodec_AC.config import Config
 from FACodec_AC.utils import pad_token_sequence, standardize
 import random
+from typing import List
 
 
 
@@ -86,19 +87,54 @@ class FixedSampler(Sampler):
     def __len__(self):
         return len(self.indices)
 
-class LengthSortedBatchSampler(BatchSampler):
-    def __init__(self, dataset, batch_size, drop_last=False, shuffle=False):
-        # Sort indices descending (longest first)
-        indices = list(range(len(dataset)))
-        indices.sort(key=lambda idx: dataset.get_seq_length(idx), reverse=True)
-        # Bucket-level shuffling here.
-        if shuffle:
-            bucket_size = batch_size * Config.batches_per_bucket
-            buckets = [indices[i:i+bucket_size] for i in range(0, len(indices), bucket_size)]
+class LengthSortedBatchSampler(Sampler[List[int]]):
+    def __init__(
+        self,
+        dataset: Dataset,
+        batch_size: int,
+        drop_last: bool = False,
+        shuffle: bool = False,
+        batches_per_bucket: int = 10,   # you can tune this
+    ):
+        self.dataset = dataset
+        self.batch_size = batch_size
+        self.drop_last = drop_last
+        self.shuffle = shuffle
+        self.batches_per_bucket = batches_per_bucket
+
+    def __iter__(self):
+        # 1) sort all indices by descending sequence-length
+        indices = list(range(len(self.dataset)))
+        indices.sort(
+            key=lambda idx: self.dataset.get_seq_length(idx),
+            reverse=True
+        )
+
+        # 2) if requested, do your bucket-level shuffling
+        if self.shuffle:
+            bucket_size = self.batch_size * self.batches_per_bucket
+            buckets = [
+                indices[i : i + bucket_size]
+                for i in range(0, len(indices), bucket_size)
+            ]
             random.shuffle(buckets)
             indices = [idx for bucket in buckets for idx in bucket]
-        sampler = FixedSampler(indices)
-        super().__init__(sampler, batch_size, drop_last)
+
+        # 3) emit fixed-size batches
+        batch: List[int] = []
+        for idx in indices:
+            batch.append(idx)
+            if len(batch) == self.batch_size:
+                yield batch
+                batch = []
+        if (not self.drop_last) and batch:
+            yield batch
+
+    def __len__(self):
+        n = len(self.dataset) // self.batch_size
+        if not self.drop_last and len(self.dataset) % self.batch_size:
+            n += 1
+        return n
 
 def collate_fn_zcontent(batch):
     # Determine maximum time-length in batch (using zc1 shape: [1, d, T])

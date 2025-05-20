@@ -54,8 +54,14 @@ def main():
     )
     
     # Use LengthSortedBatchSampler for bucketing.
-    train_batch_sampler = LengthSortedBatchSampler(train_dataset, batch_size=Config.batch_size, drop_last=False)
-    test_batch_sampler  = LengthSortedBatchSampler(test_dataset, batch_size=Config.batch_size, drop_last=False)
+    train_batch_sampler = LengthSortedBatchSampler(train_dataset, batch_size=Config.batch_size, 
+                                                   drop_last=False, 
+                                                   shuffle=True,
+                                                   batches_per_bucket=Config.batches_per_bucket)
+    test_batch_sampler  = LengthSortedBatchSampler(test_dataset, batch_size=Config.batch_size, 
+                                                   drop_last=False,
+                                                   shuffle=False,
+                                                   batches_per_bucket=Config.batches_per_bucket)
     
     dataloader_train = DataLoader(train_dataset, batch_sampler=train_batch_sampler, collate_fn=collate_fn_zcontent)
     dataloader_test  = DataLoader(test_dataset, batch_sampler=test_batch_sampler, collate_fn=collate_fn_zcontent)
@@ -85,7 +91,8 @@ def main():
     
     writer = SummaryWriter(log_dir=Config.tensorboard_dir)
     best_eval_loss = float('inf')
-    
+    global_step = 0
+
     for epoch in range(Config.epochs):
         total_loss = 0.0
         total_loss_zc1 = 0.0
@@ -94,6 +101,7 @@ def main():
 
         # --- Training ---
         for zc1, zc2, phone_cond, mask in dataloader_train:
+            global_step += 1
             optimizer.zero_grad()
             x0 = zc1.to(Config.device)
             zc2 = zc2.to(Config.device)
@@ -115,16 +123,26 @@ def main():
                 padding_mask=padding_mask
             )
             
-            loss_zc1 = F.mse_loss(zc1_pred, x0)
-            loss_zc2 = F.mse_loss(zc2_pred, zc2)
+            mask_exp = (~padding_mask).unsqueeze(1)          # [B,1,T]
+            loss_zc1 = F.mse_loss(zc1_pred, x0, reduction='none')
+            loss_zc1 = loss_zc1.masked_select(mask_exp).mean()
+
+            loss_zc2 = F.mse_loss(zc2_pred, zc2, reduction='none')
+            loss_zc2 = loss_zc2.masked_select(mask_exp).mean()
             loss = loss_zc1 + 0.5*loss_zc2
             loss.backward()
+            grad_norm = torch.nn.utils.clip_grad_norm_(model.parameters(), max_norm=1.0)
             optimizer.step()
             scheduler.step()
             total_loss += loss.item()
             total_loss_zc1 += loss_zc1.item()
             total_loss_zc2 += loss_zc2.item()
             num_batches += 1
+
+            if global_step % 20 == 0:
+                current_lr = scheduler.get_last_lr()[0]
+                writer.add_scalar("Diag/grad_norm", grad_norm, global_step)
+                writer.add_scalar("Diag/lr", current_lr, global_step)
 
         avg_loss = total_loss / max(num_batches, 1)
         avg_loss_zc1 = total_loss_zc1 / max(num_batches, 1)
@@ -147,7 +165,8 @@ def main():
                     padded_phone_ids = test_phone_ids.to(Config.device)
                     zc2_val = zc2_val.to(Config.device)
                     bsz, feature_dim, seq_len = x0.shape
-                    noise_raw = random.uniform(Config.NOISE_MIN, Config.NOISE_MAX)
+                    # Now best checkpoints are really the best ones regargless of random noise.
+                    noise_raw = 0.0#random.uniform(Config.NOISE_MIN, Config.NOISE_MAX)
                     noise_norm = (noise_raw - Config.NOISE_MIN) / (Config.NOISE_MAX - Config.NOISE_MIN)
                     noise_scaled = torch.full((bsz, seq_len, feature_dim), noise_norm, device=Config.device, dtype=torch.float)
 
@@ -160,8 +179,12 @@ def main():
                         noise_scaled=noise_scaled,
                         padding_mask=padding_mask
                     )
-                    loss_zc1 = F.mse_loss(zc1_pred, x0)
-                    loss_zc2 = F.mse_loss(zc2_pred, zc2_val)
+                    mask_exp = (~padding_mask).unsqueeze(1)          # [B,1,T]
+                    loss_zc1 = F.mse_loss(zc1_pred, x0, reduction='none')
+                    loss_zc1 = loss_zc1.masked_select(mask_exp).mean()
+
+                    loss_zc2 = F.mse_loss(zc2_pred, zc2_val, reduction='none')
+                    loss_zc2 = loss_zc2.masked_select(mask_exp).mean()
                     total_test_loss += (loss_zc1.item() + 0.5*loss_zc2.item())
                     total_test_loss_zc1 += loss_zc1.item()
                     total_test_loss_zc2 += loss_zc2.item()
@@ -175,13 +198,15 @@ def main():
             writer.add_scalar("Loss/Eval_zc2", avg_test_loss_zc2, epoch+1)
 
             # Save checkpoint only if current eval loss is lower than best so far and epoch has passed Config.checkpoint_epochs.
-            if (epoch+1) >= Config.checkpoint_epochs and avg_test_loss < best_eval_loss:
+            if avg_test_loss < best_eval_loss:
                 best_eval_loss = avg_test_loss
                 checkpoint_full_path = Config.checkpoint_path
                 checkpoint_dir = os.path.dirname(checkpoint_full_path)
                 os.makedirs(checkpoint_dir, exist_ok=True)
                 torch.save(model.state_dict(), checkpoint_full_path)
-                print(f"Epoch {epoch+1}: New best eval loss: {avg_test_loss:.4f}. Checkpoint saved at {checkpoint_full_path}")
+                msg = f"Epoch {epoch+1}: New best eval loss: {avg_test_loss:.4f}. Checkpoint saved at {checkpoint_full_path}"
+                print(msg)
+                writer.add_text("Training/Checkpoint", msg, global_step=epoch+1)
             model.train()
     
     writer.close()
